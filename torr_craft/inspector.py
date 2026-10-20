@@ -19,7 +19,7 @@ from PySide2.QtWidgets import (
 
 from . import theme
 from .components.base import BaseDevice
-from .components.pipe import PipeModel
+from .components.pipe import PipeModel, normalize_anchor, parse_anchor
 from .device_specs import DEVICE_SPECS
 from .widgets import ToggleSwitch, TypeGlyph
 
@@ -378,21 +378,38 @@ class InspectorPanel(QFrame):
         self._pipe_source.setStyleSheet(f"color: {theme.TEXT}; font-size: 12px; font-weight: 600;")
         self._pipe_target = QLabel("—")
         self._pipe_target.setStyleSheet(f"color: {theme.TEXT}; font-size: 12px; font-weight: 600;")
+        self._pipe_source_anchor_combo = self._anchor_combo()
+        self._pipe_target_anchor_combo = self._anchor_combo()
+        self._pipe_source_anchor_combo.currentIndexChanged.connect(
+            lambda index: self._apply_pipe_anchor("source")
+        )
+        self._pipe_target_anchor_combo.currentIndexChanged.connect(
+            lambda index: self._apply_pipe_anchor("target")
+        )
         source_row = QHBoxLayout()
         source_key = QLabel("A")
         source_key.setObjectName("Tiny")
         source_row.addWidget(source_key)
         source_row.addWidget(self._pipe_source, 1)
+        source_row.addWidget(self._pipe_source_anchor_combo)
         target_row = QHBoxLayout()
         target_key = QLabel("B")
         target_key.setObjectName("Tiny")
         target_row.addWidget(target_key)
         target_row.addWidget(self._pipe_target, 1)
+        target_row.addWidget(self._pipe_target_anchor_combo)
         card_layout.addLayout(source_row)
         card_layout.addLayout(target_row)
+        self._pipe_anchor_hint = QLabel("A 自动 · B 自动")
+        self._pipe_anchor_hint.setObjectName("Tiny")
+        self._pipe_anchor_hint.setWordWrap(True)
+        card_layout.addWidget(self._pipe_anchor_hint)
         section_layout.addWidget(card)
 
-        endpoint_hint = QLabel("端点自动吸附到元件边缘。")
+        endpoint_hint = QLabel(
+            "端点默认自动吸附；可在右侧固定方位，或拖动画布上的琥珀色菱形。"
+            "右键 / 双击端点可恢复自动。"
+        )
         endpoint_hint.setObjectName("Hint")
         endpoint_hint.setWordWrap(True)
         section_layout.addWidget(endpoint_hint)
@@ -460,6 +477,18 @@ class InspectorPanel(QFrame):
         row_layout.addStretch(1)
         row_layout.addWidget(switch)
         return row, switch
+
+    def _anchor_combo(self):
+        combo = QComboBox()
+        combo.setFixedWidth(82)
+        combo.setToolTip("端点连接点：自动吸附、固定边中点，或自定义位置")
+        combo.addItem("自动", "auto")
+        combo.addItem("左侧", "left:0.500")
+        combo.addItem("右侧", "right:0.500")
+        combo.addItem("顶部", "top:0.500")
+        combo.addItem("底部", "bottom:0.500")
+        combo.addItem("自定义", "custom")
+        return combo
 
     def _make_geometry_spin(self):
         spin = QSpinBox()
@@ -625,7 +654,78 @@ class InspectorPanel(QFrame):
         b = self.canvas.devices.get(pipe.target_id)
         self._pipe_source.setText(a.label if a else "—")
         self._pipe_target.setText(b.label if b else "—")
+        self._refresh_pipe_anchor_combos(pipe)
         self._refresh_pipe_route(pipe)
+
+    @staticmethod
+    def _anchor_display(anchor):
+        normalized = normalize_anchor(anchor)
+        if normalized == "auto":
+            return "自动"
+        parsed = parse_anchor(normalized)
+        if parsed is None:
+            return "自动"
+        side, fraction = parsed
+        side_label = {
+            "left": "左侧",
+            "right": "右侧",
+            "top": "顶部",
+            "bottom": "底部",
+        }.get(side, side)
+        return f"{side_label} {fraction * 100:.0f}%"
+
+    def _refresh_pipe_anchor_combos(self, pipe):
+        was_loading = self._loading
+        self._loading = True
+        try:
+            for combo, anchor in (
+                (self._pipe_source_anchor_combo, pipe.source_anchor),
+                (self._pipe_target_anchor_combo, pipe.target_anchor),
+            ):
+                normalized = normalize_anchor(anchor)
+                if normalized == "auto":
+                    data = "auto"
+                else:
+                    parsed = parse_anchor(normalized)
+                    side, fraction = parsed
+                    data = (
+                        f"{side}:0.500"
+                        if abs(fraction - 0.5) < 0.001
+                        else "custom"
+                    )
+                index = combo.findData(data)
+                combo.setCurrentIndex(index if index >= 0 else 0)
+            source_text = self._anchor_display(pipe.source_anchor)
+            target_text = self._anchor_display(pipe.target_anchor)
+            self._pipe_anchor_hint.setText(f"A  {source_text}   ·   B  {target_text}")
+            custom = (
+                normalize_anchor(pipe.source_anchor) != "auto"
+                or normalize_anchor(pipe.target_anchor) != "auto"
+            )
+            self._pipe_anchor_hint.setStyleSheet(
+                f"color: {theme.AMBER if custom else theme.MUTED}; font-size: 10px;"
+            )
+        finally:
+            self._loading = was_loading
+
+    def _apply_pipe_anchor(self, end):
+        if (
+            self._loading
+            or self.canvas is None
+            or not isinstance(self._selected, PipeModel)
+        ):
+            return
+        combo = (
+            self._pipe_source_anchor_combo
+            if end == "source"
+            else self._pipe_target_anchor_combo
+        )
+        data = combo.currentData()
+        if data == "custom":
+            self.canvas.customize_pipe_endpoint(self._selected, end)
+        else:
+            self.canvas.set_pipe_endpoint_anchor(self._selected, end, data)
+        self._refresh_pipe_anchor_combos(self._selected)
 
     def _refresh_pipe_route(self, pipe):
         was_loading = self._loading
@@ -656,6 +756,7 @@ class InspectorPanel(QFrame):
     def _on_pipe_route_changed(self, pipe):
         if isinstance(self._selected, PipeModel) and self._selected is pipe:
             self._refresh_pipe_route(pipe)
+            self._refresh_pipe_anchor_combos(pipe)
 
     def _apply_pipe_route(self, index=None):
         if (

@@ -19,6 +19,7 @@ from .components.pipe import (
     ROUTE_MODES,
     decode_bend_points,
     encode_bend_points,
+    normalize_anchor,
 )
 from .topology import unisolated_chamber_pair
 
@@ -131,6 +132,11 @@ def _pipe_bounds(pipe, components):
     top = min(a.y, b.y)
     right = max(a.x + a.width, b.x + b.width)
     bottom = max(a.y + a.height, b.y + b.height)
+    for x, y in pipe.bend_points:
+        left = min(left, x)
+        top = min(top, y)
+        right = max(right, x)
+        bottom = max(bottom, y)
     return left, top, max(0, right - left), max(0, bottom - top)
 
 
@@ -198,6 +204,8 @@ def dumps_ui(document):
             encode_bend_points(pipe.bend_points),
             dynamic=True,
         )
+        _add_property(widget, "sourceAnchor", pipe.source_anchor, dynamic=True)
+        _add_property(widget, "targetAnchor", pipe.target_anchor, dynamic=True)
 
     customwidgets = ET.SubElement(root, "customwidgets")
     for key in PALETTE_ORDER:
@@ -473,6 +481,25 @@ def loads_ui(text, fallback_name="未命名工程"):
                 f"管道 {source.label} → {target.label} 有 {invalid_bends} 个拐点超出画布，已裁剪"
             )
 
+        source_anchor_raw = _prop_text(node, "sourceAnchor", "auto")
+        target_anchor_raw = _prop_text(node, "targetAnchor", "auto")
+        source_anchor = normalize_anchor(source_anchor_raw)
+        target_anchor = normalize_anchor(target_anchor_raw)
+        if (
+            source_anchor_raw.strip().lower() not in ("", "auto")
+            and source_anchor == "auto"
+        ):
+            warnings.append(
+                f"管道 {source.label} → {target.label} 的起点连接点无效，已改为自动"
+            )
+        if (
+            target_anchor_raw.strip().lower() not in ("", "auto")
+            and target_anchor == "auto"
+        ):
+            warnings.append(
+                f"管道 {source.label} → {target.label} 的终点连接点无效，已改为自动"
+            )
+
         raw_pipe_id = node.get("name", "")
         pipe_id = _unique_id(raw_pipe_id or f"pipe_{len(pipes) + 1}", used_ids)
         pipes.append(
@@ -482,6 +509,8 @@ def loads_ui(text, fallback_name="未命名工程"):
                 target_id=target_id,
                 route_mode=route_mode,
                 bend_points=bend_points,
+                source_anchor=source_anchor,
+                target_anchor=target_anchor,
             )
         )
         accepted_edges.append((source_id, target_id))

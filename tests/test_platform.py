@@ -180,6 +180,70 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(pipe.route_mode, "straight")
         self.assertEqual(len(canvas.pipe_points(pipe)), 2)
 
+    def test_pipe_endpoint_anchor_changes_connection_point(self):
+        canvas = Canvas()
+        chamber = canvas.add_device("chamber", x=80, y=100, select=False)
+        valve = canvas.add_device("angle", x=500, y=300, select=False)
+        pipe = canvas.create_pipe(chamber, valve)
+        self.assertEqual(pipe.source_anchor, "auto")
+        self.assertTrue(
+            canvas.set_pipe_endpoint_anchor(pipe, "source", "right:0.200")
+        )
+        self.assertEqual(pipe.source_anchor, "right:0.200")
+        points = canvas.pipe_points(pipe)
+        self.assertAlmostEqual(points[0].x(), chamber.x() + chamber.width(), delta=1)
+        expected_y = chamber.y() + chamber.height() * 0.2
+        self.assertAlmostEqual(points[0].y(), expected_y, delta=2)
+
+        canvas.set_pipe_route_mode(pipe, "straight")
+        points = canvas.pipe_points(pipe)
+        self.assertAlmostEqual(points[0].x(), chamber.x() + chamber.width(), delta=1)
+        self.assertAlmostEqual(points[0].y(), expected_y, delta=2)
+
+    def test_pipe_endpoint_can_be_dragged(self):
+        canvas = Canvas()
+        canvas.show()
+        chamber = canvas.add_device("chamber", x=80, y=100, select=False)
+        valve = canvas.add_device("angle", x=500, y=300, select=False)
+        pipe = canvas.create_pipe(chamber, valve)
+        canvas.select(pipe)
+        self.app.processEvents()
+        points = canvas.pipe_points(pipe)
+        start = QPointF(points[0])
+        end = QPointF(chamber.x() + chamber.width() * 0.65, chamber.y())
+        global_start = QPointF(canvas.mapToGlobal(start.toPoint()))
+        global_end = QPointF(canvas.mapToGlobal(end.toPoint()))
+
+        def send(kind, pos, global_pos, button, buttons):
+            event = QMouseEvent(kind, pos, global_pos, button, buttons, Qt.NoModifier)
+            QApplication.sendEvent(canvas, event)
+
+        send(QEvent.MouseButtonPress, start, global_start, Qt.LeftButton, Qt.LeftButton)
+        send(QEvent.MouseMove, end, global_end, Qt.NoButton, Qt.LeftButton)
+        send(QEvent.MouseButtonRelease, end, global_end, Qt.LeftButton, Qt.NoButton)
+        self.assertTrue(pipe.source_anchor.startswith("top:"))
+        updated = canvas.pipe_points(pipe)
+        self.assertAlmostEqual(updated[0].y(), chamber.y(), delta=1)
+        canvas.close()
+
+    def test_inspector_pipe_endpoint_anchor_controls(self):
+        canvas = Canvas()
+        chamber = canvas.add_device("chamber", x=80, y=100, select=False)
+        valve = canvas.add_device("angle", x=500, y=300, select=False)
+        pipe = canvas.create_pipe(chamber, valve)
+        panel = InspectorPanel()
+        panel.set_canvas(canvas)
+        panel.show()
+        canvas.select(pipe)
+        self.app.processEvents()
+        self.assertEqual(panel._pipe_source_anchor_combo.count(), 6)
+        left_index = panel._pipe_source_anchor_combo.findData("left:0.500")
+        panel._pipe_source_anchor_combo.setCurrentIndex(left_index)
+        self.assertEqual(pipe.source_anchor, "left:0.500")
+        self.assertIn("左侧", panel._pipe_anchor_hint.text())
+        panel.close()
+        canvas.close()
+
     def test_custom_bend_can_be_dragged(self):
         canvas = Canvas()
         canvas.show()
@@ -301,16 +365,22 @@ class PlatformTests(unittest.TestCase):
         document = demo_document()
         document.pipes[0].route_mode = "custom"
         document.pipes[0].bend_points = [(145, 380), (320, 380)]
+        document.pipes[0].source_anchor = "right:0.250"
+        document.pipes[0].target_anchor = "bottom:0.750"
         document.pipes[1].route_mode = "straight"
         loaded = loads_ui(dumps_ui(document))
         self.assertEqual(loaded.pipes[0].route_mode, "custom")
         self.assertEqual(loaded.pipes[0].bend_points, [(145, 380), (320, 380)])
+        self.assertEqual(loaded.pipes[0].source_anchor, "right:0.250")
+        self.assertEqual(loaded.pipes[0].target_anchor, "bottom:0.750")
         self.assertEqual(loaded.pipes[1].route_mode, "straight")
 
         canvas = Canvas()
         canvas.apply_document(loaded)
         self.assertEqual(canvas.pipes[0].route_mode, "custom")
         self.assertEqual(canvas.pipes[0].bend_points, [(145, 380), (320, 380)])
+        self.assertEqual(canvas.pipes[0].source_anchor, "right:0.250")
+        self.assertEqual(canvas.pipes[0].target_anchor, "bottom:0.750")
         self.assertEqual(canvas.pipes[1].route_mode, "straight")
 
     def test_bundled_example_ui_is_valid(self):

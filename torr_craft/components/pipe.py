@@ -20,6 +20,8 @@ class PipeModel:
     target_id: str
     route_mode: str = "auto"
     bend_points: List[Tuple[int, int]] = field(default_factory=list)
+    source_anchor: str = "auto"
+    target_anchor: str = "auto"
 
 
 def orthogonal_points(a_rect, b_rect):
@@ -73,21 +75,96 @@ def boundary_point(rect, toward):
     return QPointF(center.x() + dx * factor, center.y() + dy * factor)
 
 
-def straight_points(a_rect, b_rect):
-    """Attach a direct centre-to-centre line to both rectangle boundaries."""
-    a = QRectF(a_rect)
-    b = QRectF(b_rect)
-    return [boundary_point(a, b.center()), boundary_point(b, a.center())]
+ANCHOR_SIDES = ("left", "right", "top", "bottom")
 
 
-def custom_route_points(a_rect, b_rect, bend_points):
-    """Build a free-form polyline through user-defined bend points."""
-    bends = [QPointF(float(x), float(y)) for x, y in bend_points]
-    if not bends:
-        return straight_points(a_rect, b_rect)
-    start = boundary_point(QRectF(a_rect), bends[0])
-    end = boundary_point(QRectF(b_rect), bends[-1])
-    points = [start] + bends + [end]
+def normalize_anchor(value):
+    """Normalize an anchor such as ``right:0.420``; ``auto`` means dynamic."""
+    text = (value or "").strip().lower()
+    if not text or text == "auto":
+        return "auto"
+    side, separator, fraction_text = text.partition(":")
+    if not separator or side not in ANCHOR_SIDES:
+        return "auto"
+    try:
+        fraction = float(fraction_text)
+    except (TypeError, ValueError):
+        return "auto"
+    fraction = max(0.02, min(0.98, fraction))
+    return f"{side}:{fraction:.3f}"
+
+
+def parse_anchor(value):
+    anchor = normalize_anchor(value)
+    if anchor == "auto":
+        return None
+    side, fraction = anchor.split(":", 1)
+    return side, float(fraction)
+
+
+def side_point(rect, side, fraction=0.5):
+    r = QRectF(rect)
+    fraction = max(0.02, min(0.98, float(fraction)))
+    if side == "left":
+        return QPointF(r.left(), r.top() + r.height() * fraction)
+    if side == "right":
+        return QPointF(r.right(), r.top() + r.height() * fraction)
+    if side == "top":
+        return QPointF(r.left() + r.width() * fraction, r.top())
+    return QPointF(r.left() + r.width() * fraction, r.bottom())
+
+
+def side_normal(side):
+    return {
+        "left": QPointF(-1, 0),
+        "right": QPointF(1, 0),
+        "top": QPointF(0, -1),
+        "bottom": QPointF(0, 1),
+    }[side]
+
+
+def choose_side(rect, toward):
+    r = QRectF(rect)
+    center = r.center()
+    dx = toward.x() - center.x()
+    dy = toward.y() - center.y()
+    if abs(dx) >= abs(dy):
+        return "right" if dx >= 0 else "left"
+    return "bottom" if dy >= 0 else "top"
+
+
+def anchor_point(rect, anchor, toward):
+    parsed = parse_anchor(anchor)
+    if parsed is not None:
+        return side_point(rect, parsed[0], parsed[1])
+    return boundary_point(rect, toward)
+
+
+def nearest_anchor_on_rect(rect, point, snap=0.05):
+    """Project a point onto the closest rectangle edge and encode the anchor."""
+    r = QRectF(rect)
+    candidates = []
+    if r.height() > 1:
+        fraction = max(0.02, min(0.98, (point.y() - r.top()) / r.height()))
+        if snap:
+            fraction = round(fraction / snap) * snap
+            fraction = max(0.02, min(0.98, fraction))
+        candidates.append((abs(point.x() - r.left()), "left", fraction))
+        candidates.append((abs(point.x() - r.right()), "right", fraction))
+    if r.width() > 1:
+        fraction = max(0.02, min(0.98, (point.x() - r.left()) / r.width()))
+        if snap:
+            fraction = round(fraction / snap) * snap
+            fraction = max(0.02, min(0.98, fraction))
+        candidates.append((abs(point.y() - r.top()), "top", fraction))
+        candidates.append((abs(point.y() - r.bottom()), "bottom", fraction))
+    if not candidates:
+        return "auto"
+    _, side, fraction = min(candidates, key=lambda item: item[0])
+    return normalize_anchor(f"{side}:{fraction:.3f}")
+
+
+def _dedupe_points(points):
     cleaned = []
     for point in points:
         if cleaned and abs(point.x() - cleaned[-1].x()) < 0.01 and abs(
@@ -98,12 +175,141 @@ def custom_route_points(a_rect, b_rect, bend_points):
     return cleaned
 
 
-def compute_pipe_points(route_mode, bend_points, a_rect, b_rect):
+def orthogonal_points_with_anchors(
+    a_rect, b_rect, source_anchor="auto", target_anchor="auto"
+):
+    """Orthogonal route that honours one or both fixed perimeter anchors."""
+    source_anchor = normalize_anchor(source_anchor)
+    target_anchor = normalize_anchor(target_anchor)
+    if source_anchor == "auto" and target_anchor == "auto":
+        return orthogonal_points(a_rect, b_rect)
+
+    a = QRectF(a_rect)
+    b = QRectF(b_rect)
+    source_parsed = parse_anchor(source_anchor)
+    target_parsed = parse_anchor(target_anchor)
+
+    target_fixed = side_point(b, *target_parsed) if target_parsed else None
+    source_fixed = side_point(a, *source_parsed) if source_parsed else None
+
+    if source_parsed is None:
+        source_side = choose_side(a, target_fixed or b.center())
+        start = side_point(a, source_side, 0.5)
+    else:
+        source_side = source_parsed[0]
+        start = source_fixed
+    if target_parsed is None:
+        target_side = choose_side(b, source_fixed or a.center())
+        end = side_point(b, target_side, 0.5)
+    else:
+        target_side = target_parsed[0]
+        end = target_fixed
+
+    source_normal = side_normal(source_side)
+    target_normal = side_normal(target_side)
+    stub = 14.0
+    source_stub = QPointF(
+        start.x() + source_normal.x() * stub,
+        start.y() + source_normal.y() * stub,
+    )
+    target_stub = QPointF(
+        end.x() + target_normal.x() * stub,
+        end.y() + target_normal.y() * stub,
+    )
+    source_axis = "h" if source_side in ("left", "right") else "v"
+    target_axis = "h" if target_side in ("left", "right") else "v"
+
+    points = [start, source_stub]
+    if source_axis == "h" and target_axis == "h":
+        if abs(source_stub.y() - target_stub.y()) < 0.5:
+            points.append(target_stub)
+        else:
+            mid_x = (source_stub.x() + target_stub.x()) / 2.0
+            points.extend(
+                [
+                    QPointF(mid_x, source_stub.y()),
+                    QPointF(mid_x, target_stub.y()),
+                    target_stub,
+                ]
+            )
+    elif source_axis == "v" and target_axis == "v":
+        if abs(source_stub.x() - target_stub.x()) < 0.5:
+            points.append(target_stub)
+        else:
+            mid_y = (source_stub.y() + target_stub.y()) / 2.0
+            points.extend(
+                [
+                    QPointF(source_stub.x(), mid_y),
+                    QPointF(target_stub.x(), mid_y),
+                    target_stub,
+                ]
+            )
+    elif source_axis == "h" and target_axis == "v":
+        points.extend(
+            [
+                QPointF(target_stub.x(), source_stub.y()),
+                target_stub,
+            ]
+        )
+    else:
+        points.extend(
+            [
+                QPointF(source_stub.x(), target_stub.y()),
+                target_stub,
+            ]
+        )
+    points.append(end)
+    return _dedupe_points(points)
+
+
+def straight_points(
+    a_rect, b_rect, source_anchor="auto", target_anchor="auto"
+):
+    """Attach a direct line to the selected (or dynamic) perimeter points."""
+    a = QRectF(a_rect)
+    b = QRectF(b_rect)
+    target_parsed = parse_anchor(target_anchor)
+    source_parsed = parse_anchor(source_anchor)
+    target_hint = side_point(b, *target_parsed) if target_parsed else b.center()
+    source_hint = side_point(a, *source_parsed) if source_parsed else a.center()
+    start = anchor_point(a, source_anchor, target_hint)
+    end = anchor_point(b, target_anchor, source_hint)
+    return [start, end]
+
+
+def custom_route_points(
+    a_rect,
+    b_rect,
+    bend_points,
+    source_anchor="auto",
+    target_anchor="auto",
+):
+    """Build a free-form polyline through user-defined bend points."""
+    bends = [QPointF(float(x), float(y)) for x, y in bend_points]
+    if not bends:
+        return straight_points(a_rect, b_rect, source_anchor, target_anchor)
+    start = anchor_point(QRectF(a_rect), source_anchor, bends[0])
+    end = anchor_point(QRectF(b_rect), target_anchor, bends[-1])
+    return _dedupe_points([start] + bends + [end])
+
+
+def compute_pipe_points(
+    route_mode,
+    bend_points,
+    a_rect,
+    b_rect,
+    source_anchor="auto",
+    target_anchor="auto",
+):
     if route_mode == "straight":
-        return straight_points(a_rect, b_rect)
+        return straight_points(a_rect, b_rect, source_anchor, target_anchor)
     if route_mode == "custom":
-        return custom_route_points(a_rect, b_rect, bend_points)
-    return orthogonal_points(a_rect, b_rect)
+        return custom_route_points(
+            a_rect, b_rect, bend_points, source_anchor, target_anchor
+        )
+    return orthogonal_points_with_anchors(
+        a_rect, b_rect, source_anchor, target_anchor
+    )
 
 
 def encode_bend_points(points):
@@ -188,7 +394,14 @@ class VacuumPipe(QWidget):
         target = target.translated(-self.x(), -self.y())
         mode = self._property("routeMode", "auto")
         bends = decode_bend_points(self._property("bendPoints", ""))
-        points = compute_pipe_points(mode, bends, source, target)
+        points = compute_pipe_points(
+            mode,
+            bends,
+            source,
+            target,
+            self._property("sourceAnchor", "auto"),
+            self._property("targetAnchor", "auto"),
+        )
         if len(points) < 2:
             return
         pen = QPen(QColor(theme.CYAN), 4.0)

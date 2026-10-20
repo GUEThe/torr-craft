@@ -8,6 +8,7 @@ from PySide2.QtGui import (
     QLinearGradient,
     QPainter,
     QPen,
+    QPolygonF,
 )
 from PySide2.QtWidgets import QAction, QMenu, QWidget
 
@@ -30,7 +31,8 @@ from .pipe import (
     PipeModel,
     compute_pipe_points,
     distance_to_path,
-    orthogonal_points,
+    nearest_anchor_on_rect,
+    normalize_anchor,
     paint_pipe,
 )
 
@@ -67,10 +69,15 @@ class Canvas(QWidget):
         self._connect_source = None
         self._hovered_pipe = None
         self._hovered_bend = None
+        self._hovered_endpoint = None
         self._bend_drag_pipe = None
         self._bend_drag_index = None
         self._bend_drag_start = None
         self._bend_drag_moved = False
+        self._endpoint_drag_pipe = None
+        self._endpoint_drag_end = None
+        self._endpoint_drag_original = None
+        self._endpoint_drag_moved = False
         self._flow_phase = 0.0
         self._next_numbers = {}
 
@@ -136,11 +143,10 @@ class Canvas(QWidget):
                 phase=self._flow_phase,
             )
 
-        if (
-            isinstance(self._selected, PipeModel)
-            and self._selected.route_mode == "custom"
-        ):
-            self._paint_pipe_handles(p, self._selected)
+        if isinstance(self._selected, PipeModel):
+            if self._selected.route_mode == "custom":
+                self._paint_pipe_handles(p, self._selected)
+            self._paint_pipe_endpoint_handles(p, self._selected)
 
         if not self.devices and not self.pipes:
             self._paint_empty_state(p)
@@ -239,7 +245,12 @@ class Canvas(QWidget):
         if a is None or b is None:
             return []
         return compute_pipe_points(
-            pipe.route_mode, pipe.bend_points, a.geometry(), b.geometry()
+            pipe.route_mode,
+            pipe.bend_points,
+            a.geometry(),
+            b.geometry(),
+            pipe.source_anchor,
+            pipe.target_anchor,
         )
 
     def pipe_text(self, pipe):
@@ -294,7 +305,14 @@ class Canvas(QWidget):
         source, target = self._pipe_endpoints(pipe)
         if source is None or target is None:
             return []
-        points = orthogonal_points(source.geometry(), target.geometry())
+        points = compute_pipe_points(
+            "auto",
+            [],
+            source.geometry(),
+            target.geometry(),
+            pipe.source_anchor,
+            pipe.target_anchor,
+        )
         return [(int(round(p.x())), int(round(p.y()))) for p in points[1:-1]]
 
     def _notify_pipe_route(self, pipe, message=None, mark=True):
@@ -408,6 +426,94 @@ class Canvas(QWidget):
             if (pos.x() - x) ** 2 + (pos.y() - y) ** 2 <= 49.0:
                 return index
         return None
+
+    def _pipe_endpoint_points(self, pipe):
+        points = self.pipe_points(pipe)
+        if len(points) < 2:
+            return []
+        return [("source", points[0]), ("target", points[-1])]
+
+    def _pipe_endpoint_at(self, pos):
+        pipe = self._selected
+        if not isinstance(pipe, PipeModel):
+            return None
+        for end, point in self._pipe_endpoint_points(pipe):
+            if (pos.x() - point.x()) ** 2 + (pos.y() - point.y()) ** 2 <= 100.0:
+                return end
+        return None
+
+    def _paint_pipe_endpoint_handles(self, p, pipe):
+        for end, point in self._pipe_endpoint_points(pipe):
+            active = (
+                self._endpoint_drag_pipe is pipe and self._endpoint_drag_end == end
+            ) or self._hovered_endpoint == end
+            radius = 6.0 if active else 5.2
+            diamond = QPolygonF(
+                [
+                    QPointF(point.x(), point.y() - radius),
+                    QPointF(point.x() + radius, point.y()),
+                    QPointF(point.x(), point.y() + radius),
+                    QPointF(point.x() - radius, point.y()),
+                ]
+            )
+            if active:
+                glow = QColor(theme.AMBER)
+                glow.setAlpha(55)
+                p.setBrush(glow)
+                p.setPen(Qt.NoPen)
+                p.drawEllipse(point, 11.0, 11.0)
+            p.setBrush(QColor("#1a1408"))
+            p.setPen(QPen(QColor(theme.AMBER), 1.6 if active else 1.2))
+            p.drawPolygon(diamond)
+            p.setBrush(QColor(theme.AMBER))
+            p.setPen(Qt.NoPen)
+            p.drawEllipse(point, 1.5, 1.5)
+
+            p.setFont(theme.font(7, QFont.DemiBold))
+            p.setPen(QColor(theme.AMBER))
+            label = "A" if end == "source" else "B"
+            offset = -10.0 if end == "source" else 10.0
+            p.drawText(
+                QRectF(point.x() - 6, point.y() + offset - 6, 12, 12),
+                Qt.AlignCenter,
+                label,
+            )
+
+    def set_pipe_endpoint_anchor(self, pipe, end, anchor, mark=True):
+        if not isinstance(pipe, PipeModel) or end not in ("source", "target"):
+            return False
+        if self.editing_locked:
+            self._status("画布已锁定，解锁后可修改端点连接点")
+            return False
+        normalized = normalize_anchor(anchor)
+        setattr(
+            pipe,
+            "source_anchor" if end == "source" else "target_anchor",
+            normalized,
+        )
+        label = "A 起点" if end == "source" else "B 终点"
+        if normalized == "auto":
+            message = f"管道 {label} · 自动吸附"
+        else:
+            message = f"管道 {label} · 自定义连接点"
+        self._notify_pipe_route(pipe, message, mark=mark)
+        return True
+
+    def customize_pipe_endpoint(self, pipe, end, mark=True):
+        if not isinstance(pipe, PipeModel):
+            return False
+        points = self._pipe_endpoint_points(pipe)
+        if not points:
+            return False
+        point = dict(points).get(end)
+        if point is None:
+            return False
+        source, target = self._pipe_endpoints(pipe)
+        device = source if end == "source" else target
+        if device is None:
+            return False
+        anchor = nearest_anchor_on_rect(device.geometry(), point, snap=0.05)
+        return self.set_pipe_endpoint_anchor(pipe, end, anchor, mark=mark)
 
     def _paint_pipe_handles(self, p, pipe):
         for index, (x, y) in enumerate(pipe.bend_points):
@@ -791,6 +897,8 @@ class Canvas(QWidget):
         mark=True,
         route_mode="auto",
         bend_points=None,
+        source_anchor="auto",
+        target_anchor="auto",
     ):
         if source.device_type == "gate" or target.device_type == "gate":
             if not bypass_validation:
@@ -809,6 +917,8 @@ class Canvas(QWidget):
             target_id=target.device_id,
             route_mode=route_mode,
             bend_points=[(int(x), int(y)) for x, y in (bend_points or [])],
+            source_anchor=normalize_anchor(source_anchor),
+            target_anchor=normalize_anchor(target_anchor),
         )
         if any(p.pipe_id == model.pipe_id for p in self.pipes):
             model.pipe_id = self._unique_id("pipe")
@@ -837,6 +947,7 @@ class Canvas(QWidget):
             self._selected.set_selected(False)
         self._selected = obj
         self._hovered_bend = None
+        self._hovered_endpoint = None
         if isinstance(obj, BaseDevice):
             obj.set_selected(True)
             obj.raise_()
@@ -844,11 +955,11 @@ class Canvas(QWidget):
         elif isinstance(obj, PipeModel):
             if obj.route_mode == "custom":
                 self._status(
-                    f"已选择管道 · {self.pipe_text(obj)} · 拖动青色控制点调整拐点"
+                    f"已选择管道 · {self.pipe_text(obj)} · 青色拐点 / 琥珀色端点"
                 )
             else:
                 self._status(
-                    f"已选择管道 · {self.pipe_text(obj)} · 双击管段可添加拐点"
+                    f"已选择管道 · {self.pipe_text(obj)} · 琥珀色菱形可自定义连接点"
                 )
         self.update()
         self.selectionChanged.emit(obj)
@@ -861,6 +972,7 @@ class Canvas(QWidget):
             self._selected.set_selected(False)
         self._selected = None
         self._hovered_bend = None
+        self._hovered_endpoint = None
         self.update()
         self.selectionChanged.emit(None)
 
@@ -920,7 +1032,11 @@ class Canvas(QWidget):
             if self._bend_drag_pipe is pipe:
                 self._bend_drag_pipe = None
                 self._bend_drag_index = None
+            if self._endpoint_drag_pipe is pipe:
+                self._endpoint_drag_pipe = None
+                self._endpoint_drag_end = None
             self._hovered_bend = None
+            self._hovered_endpoint = None
             self._emit_counts()
             self.update()
             self.documentChanged.emit("删除管道")
@@ -963,6 +1079,7 @@ class Canvas(QWidget):
         self._connect_source = None
         self._hovered_pipe = None
         self._hovered_bend = None
+        self._hovered_endpoint = None
         self._bend_drag_pipe = None
         self._bend_drag_index = None
         self._next_numbers.clear()
@@ -1000,6 +1117,8 @@ class Canvas(QWidget):
                 target_id=p.target_id,
                 route_mode=p.route_mode,
                 bend_points=list(p.bend_points),
+                source_anchor=p.source_anchor,
+                target_anchor=p.target_anchor,
             )
             for p in self.pipes
         ]
@@ -1058,6 +1177,8 @@ class Canvas(QWidget):
                 mark=False,
                 route_mode=pipe.route_mode,
                 bend_points=pipe.bend_points,
+                source_anchor=pipe.source_anchor,
+                target_anchor=pipe.target_anchor,
             )
         self._next_numbers.clear()
         for widget in self.devices.values():
@@ -1105,6 +1226,23 @@ class Canvas(QWidget):
     def mousePressEvent(self, event):
         self.setFocus()
         if event.button() == Qt.LeftButton:
+            endpoint = self._pipe_endpoint_at(event.pos())
+            if endpoint is not None and isinstance(self._selected, PipeModel):
+                pipe = self._selected
+                self._endpoint_drag_pipe = pipe
+                self._endpoint_drag_end = endpoint
+                self._endpoint_drag_original = (
+                    pipe.source_anchor
+                    if endpoint == "source"
+                    else pipe.target_anchor
+                )
+                self._endpoint_drag_moved = False
+                self._hovered_endpoint = endpoint
+                self.setCursor(Qt.SizeAllCursor)
+                self.update()
+                event.accept()
+                return
+
             handle_index = self._pipe_handle_at(event.pos())
             if handle_index is not None and isinstance(self._selected, PipeModel):
                 self._bend_drag_pipe = self._selected
@@ -1125,6 +1263,12 @@ class Canvas(QWidget):
             event.accept()
             return
         if event.button() == Qt.RightButton:
+            endpoint = self._pipe_endpoint_at(event.pos())
+            if endpoint is not None and isinstance(self._selected, PipeModel):
+                self.set_pipe_endpoint_anchor(self._selected, endpoint, "auto")
+                event.accept()
+                return
+
             handle_index = self._pipe_handle_at(event.pos())
             if handle_index is not None and isinstance(self._selected, PipeModel):
                 self.remove_pipe_bend(self._selected, handle_index)
@@ -1162,6 +1306,37 @@ class Canvas(QWidget):
 
     def mouseMoveEvent(self, event):
         self.cursorMoved.emit(event.pos().x(), event.pos().y())
+        if (
+            self._endpoint_drag_pipe is not None
+            and self._endpoint_drag_end is not None
+        ):
+            pipe = self._endpoint_drag_pipe
+            source, target = self._pipe_endpoints(pipe)
+            device = source if self._endpoint_drag_end == "source" else target
+            if device is None:
+                self._endpoint_drag_pipe = None
+                self._endpoint_drag_end = None
+                return
+            snap_fraction = (
+                0.05
+                if self.snap_enabled and not (event.modifiers() & Qt.AltModifier)
+                else 0.01
+            )
+            anchor = nearest_anchor_on_rect(
+                device.geometry(), QPointF(event.pos()), snap=snap_fraction
+            )
+            attr = (
+                "source_anchor"
+                if self._endpoint_drag_end == "source"
+                else "target_anchor"
+            )
+            if getattr(pipe, attr) != anchor:
+                setattr(pipe, attr, anchor)
+                self._endpoint_drag_moved = True
+                self.update()
+            self.setCursor(Qt.SizeAllCursor)
+            return
+
         if self._bend_drag_pipe is not None and self._bend_drag_index is not None:
             pipe = self._bend_drag_pipe
             if not (0 <= self._bend_drag_index < len(pipe.bend_points)):
@@ -1186,6 +1361,14 @@ class Canvas(QWidget):
             self.setCursor(Qt.CrossCursor)
             return
 
+        endpoint = self._pipe_endpoint_at(event.pos())
+        if endpoint != self._hovered_endpoint:
+            self._hovered_endpoint = endpoint
+            self.update()
+        if endpoint is not None:
+            self.setCursor(Qt.SizeAllCursor)
+            return
+
         handle_index = self._pipe_handle_at(event.pos())
         if handle_index != self._hovered_bend:
             self._hovered_bend = handle_index
@@ -1202,6 +1385,27 @@ class Canvas(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if (
+            event.button() == Qt.LeftButton
+            and self._endpoint_drag_pipe is not None
+            and self._endpoint_drag_end is not None
+        ):
+            pipe = self._endpoint_drag_pipe
+            moved = self._endpoint_drag_moved
+            self._endpoint_drag_pipe = None
+            self._endpoint_drag_end = None
+            self._endpoint_drag_original = None
+            self._endpoint_drag_moved = False
+            self.setCursor(Qt.ArrowCursor)
+            if moved:
+                self._notify_pipe_route(
+                    pipe, "已自定义管道端点连接点", mark=True
+                )
+            else:
+                self.update()
+            event.accept()
+            return
+
         if (
             event.button() == Qt.LeftButton
             and self._bend_drag_pipe is not None
@@ -1224,6 +1428,11 @@ class Canvas(QWidget):
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
+            endpoint = self._pipe_endpoint_at(event.pos())
+            if endpoint is not None and isinstance(self._selected, PipeModel):
+                self.set_pipe_endpoint_anchor(self._selected, endpoint, "auto")
+                event.accept()
+                return
             if self._pipe_handle_at(event.pos()) is not None:
                 event.accept()
                 return
@@ -1241,7 +1450,22 @@ class Canvas(QWidget):
             event.accept()
             return
         if event.key() == Qt.Key_Escape:
-            if self._bend_drag_pipe is not None:
+            if self._endpoint_drag_pipe is not None:
+                pipe = self._endpoint_drag_pipe
+                attr = (
+                    "source_anchor"
+                    if self._endpoint_drag_end == "source"
+                    else "target_anchor"
+                )
+                if self._endpoint_drag_original is not None:
+                    setattr(pipe, attr, self._endpoint_drag_original)
+                self._endpoint_drag_pipe = None
+                self._endpoint_drag_end = None
+                self._endpoint_drag_original = None
+                self._endpoint_drag_moved = False
+                self.setCursor(Qt.ArrowCursor)
+                self.update()
+            elif self._bend_drag_pipe is not None:
                 self._bend_drag_pipe = None
                 self._bend_drag_index = None
                 self._bend_drag_start = None
@@ -1271,6 +1495,8 @@ class Canvas(QWidget):
             self.clear_selection()
             self._bend_drag_pipe = None
             self._bend_drag_index = None
+            self._endpoint_drag_pipe = None
+            self._endpoint_drag_end = None
             self.setCursor(Qt.ArrowCursor)
         for device in self.devices.values():
             device.setCursor(Qt.ArrowCursor if self.editing_locked else Qt.OpenHandCursor)

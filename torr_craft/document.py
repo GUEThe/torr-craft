@@ -32,6 +32,8 @@ class PipeData:
     target_id: str
     route_mode: str = "auto"
     bend_points: List[Tuple[int, int]] = field(default_factory=list)
+    source_anchor: str = "auto"
+    target_anchor: str = "auto"
 
 
 @dataclass

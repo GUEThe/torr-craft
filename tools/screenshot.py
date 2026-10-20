@@ -46,6 +46,8 @@ def main():
         pipe = window.canvas.pipes[0]
         window.canvas.set_pipe_route_mode(pipe, "custom")
         window.canvas.add_pipe_bend(pipe, None)
+        window.canvas.set_pipe_endpoint_anchor(pipe, "source", "bottom:0.700")
+        window.canvas.set_pipe_endpoint_anchor(pipe, "target", "top:0.300")
         window.canvas.select(pipe)
         window.inspector.show_selection(pipe)
         app.processEvents()
