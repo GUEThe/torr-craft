@@ -15,6 +15,11 @@ from .document import (
     DocumentData,
     PipeData,
 )
+from .components.pipe import (
+    ROUTE_MODES,
+    decode_bend_points,
+    encode_bend_points,
+)
 from .topology import unisolated_chamber_pair
 
 MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -186,6 +191,13 @@ def dumps_ui(document):
         _add_rect(widget, x, y, w, h)
         _add_property(widget, "sourceId", pipe.source_id, dynamic=True)
         _add_property(widget, "targetId", pipe.target_id, dynamic=True)
+        _add_property(widget, "routeMode", pipe.route_mode, dynamic=True)
+        _add_property(
+            widget,
+            "bendPoints",
+            encode_bend_points(pipe.bend_points),
+            dynamic=True,
+        )
 
     customwidgets = ET.SubElement(root, "customwidgets")
     for key in PALETTE_ORDER:
@@ -436,9 +448,42 @@ def loads_ui(text, fallback_name="未命名工程"):
             )
             continue
 
+        route_mode = _prop_text(node, "routeMode", "auto") or "auto"
+        if route_mode not in ROUTE_MODES:
+            warnings.append(
+                f"管道 {source.label} → {target.label} 的路由方式无效，已改为自动正交"
+            )
+            route_mode = "auto"
+        raw_bends = _prop_text(node, "bendPoints", "")
+        bend_points = []
+        invalid_bends = 0
+        for x, y in decode_bend_points(raw_bends):
+            if 0 <= x <= CANVAS_WIDTH and 0 <= y <= CANVAS_HEIGHT:
+                bend_points.append((x, y))
+            else:
+                invalid_bends += 1
+                bend_points.append(
+                    (
+                        max(0, min(CANVAS_WIDTH, x)),
+                        max(0, min(CANVAS_HEIGHT, y)),
+                    )
+                )
+        if invalid_bends:
+            warnings.append(
+                f"管道 {source.label} → {target.label} 有 {invalid_bends} 个拐点超出画布，已裁剪"
+            )
+
         raw_pipe_id = node.get("name", "")
         pipe_id = _unique_id(raw_pipe_id or f"pipe_{len(pipes) + 1}", used_ids)
-        pipes.append(PipeData(pipe_id=pipe_id, source_id=source_id, target_id=target_id))
+        pipes.append(
+            PipeData(
+                pipe_id=pipe_id,
+                source_id=source_id,
+                target_id=target_id,
+                route_mode=route_mode,
+                bend_points=bend_points,
+            )
+        )
         accepted_edges.append((source_id, target_id))
 
     if not components and pipe_nodes:

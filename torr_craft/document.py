@@ -1,7 +1,7 @@
 """Plain document dataclasses shared by the canvas and the .ui codec."""
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Tuple
 
 CANVAS_WIDTH = 1440
 CANVAS_HEIGHT = 900
@@ -30,6 +30,8 @@ class PipeData:
     pipe_id: str
     source_id: str
     target_id: str
+    route_mode: str = "auto"
+    bend_points: List[Tuple[int, int]] = field(default_factory=list)
 
 
 @dataclass

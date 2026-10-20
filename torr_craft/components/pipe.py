@@ -1,7 +1,8 @@
-"""Data model and renderer for orthogonal vacuum piping."""
+"""Data model and renderer for vacuum piping and routing modes."""
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List, Tuple
 
 from PySide2.QtCore import QPointF, QRectF, Qt
 from PySide2.QtGui import QColor, QPainter, QPen, QPolygonF
@@ -9,12 +10,16 @@ from PySide2.QtWidgets import QWidget
 
 from .. import theme
 
+ROUTE_MODES = ("auto", "straight", "custom")
+
 
 @dataclass
 class PipeModel:
     pipe_id: str
     source_id: str
     target_id: str
+    route_mode: str = "auto"
+    bend_points: List[Tuple[int, int]] = field(default_factory=list)
 
 
 def orthogonal_points(a_rect, b_rect):
@@ -48,6 +53,81 @@ def orthogonal_points(a_rect, b_rect):
         return [start, end]
     mid_y = (start.y() + end.y()) / 2.0
     return [start, QPointF(start.x(), mid_y), QPointF(end.x(), mid_y), end]
+
+
+def boundary_point(rect, toward):
+    """Return where a ray from the rectangle centre to *toward* exits it."""
+    r = QRectF(rect)
+    center = r.center()
+    dx = toward.x() - center.x()
+    dy = toward.y() - center.y()
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return QPointF(center)
+
+    factors = []
+    if abs(dx) > 1e-9:
+        factors.append((r.width() / 2.0) / abs(dx))
+    if abs(dy) > 1e-9:
+        factors.append((r.height() / 2.0) / abs(dy))
+    factor = min(factors)
+    return QPointF(center.x() + dx * factor, center.y() + dy * factor)
+
+
+def straight_points(a_rect, b_rect):
+    """Attach a direct centre-to-centre line to both rectangle boundaries."""
+    a = QRectF(a_rect)
+    b = QRectF(b_rect)
+    return [boundary_point(a, b.center()), boundary_point(b, a.center())]
+
+
+def custom_route_points(a_rect, b_rect, bend_points):
+    """Build a free-form polyline through user-defined bend points."""
+    bends = [QPointF(float(x), float(y)) for x, y in bend_points]
+    if not bends:
+        return straight_points(a_rect, b_rect)
+    start = boundary_point(QRectF(a_rect), bends[0])
+    end = boundary_point(QRectF(b_rect), bends[-1])
+    points = [start] + bends + [end]
+    cleaned = []
+    for point in points:
+        if cleaned and abs(point.x() - cleaned[-1].x()) < 0.01 and abs(
+            point.y() - cleaned[-1].y()
+        ) < 0.01:
+            continue
+        cleaned.append(point)
+    return cleaned
+
+
+def compute_pipe_points(route_mode, bend_points, a_rect, b_rect):
+    if route_mode == "straight":
+        return straight_points(a_rect, b_rect)
+    if route_mode == "custom":
+        return custom_route_points(a_rect, b_rect, bend_points)
+    return orthogonal_points(a_rect, b_rect)
+
+
+def encode_bend_points(points):
+    return ";".join(f"{int(round(x))},{int(round(y))}" for x, y in points)
+
+
+def decode_bend_points(text, limit=64):
+    points = []
+    for token in (text or "").split(";"):
+        token = token.strip()
+        if not token:
+            continue
+        parts = token.split(",")
+        if len(parts) != 2:
+            continue
+        try:
+            x = int(float(parts[0].strip()))
+            y = int(float(parts[1].strip()))
+        except (TypeError, ValueError):
+            continue
+        points.append((x, y))
+        if len(points) >= limit:
+            break
+    return points
 
 
 def distance_to_segment(point, start, end):
@@ -106,7 +186,9 @@ class VacuumPipe(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
         source = source.translated(-self.x(), -self.y())
         target = target.translated(-self.x(), -self.y())
-        points = orthogonal_points(source, target)
+        mode = self._property("routeMode", "auto")
+        bends = decode_bend_points(self._property("bendPoints", ""))
+        points = compute_pipe_points(mode, bends, source, target)
         if len(points) < 2:
             return
         pen = QPen(QColor(theme.CYAN), 4.0)

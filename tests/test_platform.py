@@ -156,6 +156,79 @@ class PlatformTests(unittest.TestCase):
         self.assertIsNone(canvas.create_pipe(valve, first))
         self.assertEqual(len(canvas.pipes), 1)
 
+    def test_pipe_route_modes_and_custom_bends(self):
+        canvas = Canvas()
+        chamber = canvas.add_device("chamber", x=80, y=100, select=False)
+        valve = canvas.add_device("angle", x=500, y=300, select=False)
+        pipe = canvas.create_pipe(chamber, valve)
+        self.assertIsNotNone(pipe)
+        self.assertEqual(pipe.route_mode, "auto")
+        self.assertEqual(len(canvas.pipe_points(pipe)), 4)
+
+        canvas.set_pipe_route_mode(pipe, "custom")
+        self.assertEqual(pipe.route_mode, "custom")
+        self.assertGreaterEqual(len(pipe.bend_points), 2)
+        before = len(pipe.bend_points)
+        self.assertTrue(canvas.add_pipe_bend(pipe, QPointF(420, 250)))
+        self.assertEqual(len(pipe.bend_points), before + 1)
+        self.assertTrue(canvas.remove_pipe_bend(pipe, 0))
+        self.assertEqual(len(pipe.bend_points), before)
+        self.assertTrue(canvas.clear_pipe_bends(pipe))
+        self.assertEqual(pipe.bend_points, [])
+
+        canvas.set_pipe_route_mode(pipe, "straight")
+        self.assertEqual(pipe.route_mode, "straight")
+        self.assertEqual(len(canvas.pipe_points(pipe)), 2)
+
+    def test_custom_bend_can_be_dragged(self):
+        canvas = Canvas()
+        canvas.show()
+        chamber = canvas.add_device("chamber", x=80, y=100, select=False)
+        valve = canvas.add_device("angle", x=500, y=300, select=False)
+        pipe = canvas.create_pipe(chamber, valve)
+        canvas.set_pipe_route_mode(pipe, "custom")
+        self.assertTrue(canvas.add_pipe_bend(pipe, QPointF(370, 250)))
+        canvas.select(pipe)
+        self.app.processEvents()
+        self.assertGreaterEqual(len(pipe.bend_points), 1)
+        original = pipe.bend_points[0]
+        start = QPointF(*original)
+        end = start + QPointF(40, 30)
+        global_start = QPointF(canvas.mapToGlobal(start.toPoint()))
+        global_end = QPointF(canvas.mapToGlobal(end.toPoint()))
+
+        def send(kind, pos, global_pos, button, buttons):
+            event = QMouseEvent(kind, pos, global_pos, button, buttons, Qt.NoModifier)
+            QApplication.sendEvent(canvas, event)
+
+        send(QEvent.MouseButtonPress, start, global_start, Qt.LeftButton, Qt.LeftButton)
+        send(QEvent.MouseMove, end, global_end, Qt.NoButton, Qt.LeftButton)
+        send(QEvent.MouseButtonRelease, end, global_end, Qt.LeftButton, Qt.NoButton)
+        self.assertNotEqual(pipe.bend_points[0], original)
+        canvas.close()
+
+    def test_inspector_pipe_routing_controls(self):
+        canvas = Canvas()
+        chamber = canvas.add_device("chamber", x=80, y=100, select=False)
+        valve = canvas.add_device("angle", x=500, y=300, select=False)
+        pipe = canvas.create_pipe(chamber, valve)
+        panel = InspectorPanel()
+        panel.set_canvas(canvas)
+        panel.show()
+        canvas.select(pipe)
+        self.app.processEvents()
+        self.assertEqual(panel._pipe_route_combo.currentData(), "auto")
+
+        straight_index = panel._pipe_route_combo.findData("straight")
+        panel._pipe_route_combo.setCurrentIndex(straight_index)
+        self.assertEqual(pipe.route_mode, "straight")
+        panel._pipe_add_bend_btn.click()
+        self.assertEqual(pipe.route_mode, "custom")
+        self.assertGreater(len(pipe.bend_points), 0)
+        self.assertIn("拐点", panel._pipe_bend_count.text())
+        panel.close()
+        canvas.close()
+
     def test_pump_telemetry_ramps_and_spins_down(self):
         canvas = Canvas()
         pump = canvas.add_device("turbo", x=100, y=100)
@@ -223,6 +296,22 @@ class PlatformTests(unittest.TestCase):
         gate = canvas.devices["gate_1"]
         self.assertEqual(gate.flange_a_id, "chamber_1")
         self.assertEqual(gate.flange_b_id, "chamber_2")
+
+    def test_ui_round_trip_preserves_pipe_routes(self):
+        document = demo_document()
+        document.pipes[0].route_mode = "custom"
+        document.pipes[0].bend_points = [(145, 380), (320, 380)]
+        document.pipes[1].route_mode = "straight"
+        loaded = loads_ui(dumps_ui(document))
+        self.assertEqual(loaded.pipes[0].route_mode, "custom")
+        self.assertEqual(loaded.pipes[0].bend_points, [(145, 380), (320, 380)])
+        self.assertEqual(loaded.pipes[1].route_mode, "straight")
+
+        canvas = Canvas()
+        canvas.apply_document(loaded)
+        self.assertEqual(canvas.pipes[0].route_mode, "custom")
+        self.assertEqual(canvas.pipes[0].bend_points, [(145, 380), (320, 380)])
+        self.assertEqual(canvas.pipes[1].route_mode, "straight")
 
     def test_bundled_example_ui_is_valid(self):
         sample = Path(__file__).resolve().parents[1] / "examples" / "demo_system.ui"

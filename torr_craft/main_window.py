@@ -657,7 +657,7 @@ class MainWindow(QMainWindow):
                 f"<b>Torr Craft {__version__}</b><br>"
                 "基于 PySide2 的真空系统监控低代码平台<br><br>"
                 "· 分子泵 / 干泵 / 角阀 / 插板阀 / 腔室 / 管道<br>"
-                "· 拖拽组态、边角缩放、自动正交布线<br>"
+                "· 拖拽组态、边角缩放、自动正交 / 直线 / 自定义拐点<br>"
                 "· 插板阀通过两侧内联法兰隔离腔室<br>"
                 "· 开关状态、软件连接、转速与压力遥测<br>"
                 "· 导入 / 导出 Qt Designer .ui 文件<br><br>"

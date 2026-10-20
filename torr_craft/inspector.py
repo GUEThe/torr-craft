@@ -81,6 +81,7 @@ class InspectorPanel(QFrame):
         canvas.selectionChanged.connect(self.show_selection)
         canvas.geometryEdited.connect(self.sync_geometry)
         canvas.countsChanged.connect(self._on_counts_changed)
+        canvas.pipeRouteChanged.connect(self._on_pipe_route_changed)
 
     def _build_empty_page(self):
         page = QWidget()
@@ -391,13 +392,52 @@ class InspectorPanel(QFrame):
         card_layout.addLayout(target_row)
         section_layout.addWidget(card)
 
-        route_hint = QLabel(
-            "采用自动正交布线，端点吸附到元件边缘。移动或缩放元件后，管道会即时重排。"
-        )
-        route_hint.setObjectName("Hint")
-        route_hint.setWordWrap(True)
-        section_layout.addWidget(route_hint)
+        endpoint_hint = QLabel("端点自动吸附到元件边缘。")
+        endpoint_hint.setObjectName("Hint")
+        endpoint_hint.setWordWrap(True)
+        section_layout.addWidget(endpoint_hint)
         layout.addWidget(section)
+
+        route_section, route_layout = self._section("路由方式", "PIPE ROUTING")
+        route_card = QFrame()
+        route_card.setObjectName("InsetCard")
+        route_card_layout = QVBoxLayout(route_card)
+        route_card_layout.setContentsMargins(12, 10, 12, 10)
+        route_card_layout.setSpacing(7)
+
+        self._pipe_route_combo = QComboBox()
+        self._pipe_route_combo.addItem("自动正交", "auto")
+        self._pipe_route_combo.addItem("直线", "straight")
+        self._pipe_route_combo.addItem("自定义拐点", "custom")
+        self._pipe_route_combo.setMinimumHeight(32)
+        self._pipe_route_combo.currentIndexChanged.connect(self._apply_pipe_route)
+        route_card_layout.addWidget(self._pipe_route_combo)
+
+        self._pipe_route_hint = QLabel(
+            "自动正交布线，移动元件后拐点会自动重排。"
+        )
+        self._pipe_route_hint.setObjectName("Hint")
+        self._pipe_route_hint.setWordWrap(True)
+        route_card_layout.addWidget(self._pipe_route_hint)
+
+        bend_row = QHBoxLayout()
+        bend_row.setSpacing(8)
+        self._pipe_bend_count = QLabel("0 个拐点")
+        self._pipe_bend_count.setObjectName("Tiny")
+        self._pipe_add_bend_btn = QPushButton("添加拐点")
+        self._pipe_add_bend_btn.setToolTip("在最长管段的中点添加一个可拖动拐点")
+        self._pipe_add_bend_btn.clicked.connect(self._add_pipe_bend)
+        self._pipe_clear_bends_btn = QPushButton("清除")
+        self._pipe_clear_bends_btn.setProperty("role", "ghost")
+        self._pipe_clear_bends_btn.setToolTip("清除该管道的全部自定义拐点")
+        self._pipe_clear_bends_btn.clicked.connect(self._clear_pipe_bends)
+        bend_row.addWidget(self._pipe_bend_count)
+        bend_row.addStretch(1)
+        bend_row.addWidget(self._pipe_clear_bends_btn)
+        bend_row.addWidget(self._pipe_add_bend_btn)
+        route_card_layout.addLayout(bend_row)
+        route_layout.addWidget(route_card)
+        layout.addWidget(route_section)
 
         layout.addSpacing(2)
         delete = QPushButton("删除管道")
@@ -585,6 +625,60 @@ class InspectorPanel(QFrame):
         b = self.canvas.devices.get(pipe.target_id)
         self._pipe_source.setText(a.label if a else "—")
         self._pipe_target.setText(b.label if b else "—")
+        self._refresh_pipe_route(pipe)
+
+    def _refresh_pipe_route(self, pipe):
+        was_loading = self._loading
+        self._loading = True
+        try:
+            index = self._pipe_route_combo.findData(pipe.route_mode)
+            self._pipe_route_combo.setCurrentIndex(index if index >= 0 else 0)
+            bend_count = len(pipe.bend_points)
+            self._pipe_bend_count.setText(f"{bend_count} 个拐点")
+            hints = {
+                "auto": "自动正交布线，移动元件后拐点会自动重排。",
+                "straight": "从两端法兰口拉一条直线，不再生成正交折点。",
+                "custom": (
+                    "拖动画布上的青色方形控制点调整拐点；双击管段可直接添加，"
+                    "右键控制点可删除。"
+                ),
+            }
+            hint = hints.get(pipe.route_mode, hints["auto"])
+            if pipe.route_mode != "custom" and bend_count:
+                hint += f"\n已保留 {bend_count} 个自定义拐点，切换“自定义拐点”即可恢复。"
+            self._pipe_route_hint.setText(hint)
+            locked = self.canvas is not None and self.canvas.editing_locked
+            self._pipe_add_bend_btn.setEnabled(not locked)
+            self._pipe_clear_bends_btn.setEnabled(not locked and bend_count > 0)
+        finally:
+            self._loading = was_loading
+
+    def _on_pipe_route_changed(self, pipe):
+        if isinstance(self._selected, PipeModel) and self._selected is pipe:
+            self._refresh_pipe_route(pipe)
+
+    def _apply_pipe_route(self, index=None):
+        if (
+            self._loading
+            or self.canvas is None
+            or not isinstance(self._selected, PipeModel)
+        ):
+            return
+        mode = self._pipe_route_combo.currentData()
+        if self.canvas.set_pipe_route_mode(self._selected, mode):
+            self._refresh_pipe_route(self._selected)
+
+    def _add_pipe_bend(self, checked=False):
+        if self.canvas is None or not isinstance(self._selected, PipeModel):
+            return
+        if self.canvas.add_pipe_bend(self._selected):
+            self._refresh_pipe_route(self._selected)
+
+    def _clear_pipe_bends(self, checked=False):
+        if self.canvas is None or not isinstance(self._selected, PipeModel):
+            return
+        if self.canvas.clear_pipe_bends(self._selected):
+            self._refresh_pipe_route(self._selected)
 
     def _write_geometry(self, device):
         self._loading = True

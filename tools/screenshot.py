@@ -41,6 +41,20 @@ def main():
     if not pixmap.save(str(output), "PNG"):
         raise SystemExit(f"Could not write {output}")
     print(output)
+
+    if window.canvas.pipes:
+        pipe = window.canvas.pipes[0]
+        window.canvas.set_pipe_route_mode(pipe, "custom")
+        window.canvas.add_pipe_bend(pipe, None)
+        window.canvas.select(pipe)
+        window.inspector.show_selection(pipe)
+        app.processEvents()
+        pipe_output = output_dir / "pipe-routing-preview.png"
+        pipe_pixmap = window.grab()
+        if not pipe_pixmap.save(str(pipe_output), "PNG"):
+            raise SystemExit(f"Could not write {pipe_output}")
+        print(pipe_output)
+
     app.quit()
     return 0
 
