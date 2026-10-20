@@ -213,7 +213,7 @@ class MainWindow(QMainWindow):
         self._pipe_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self._pipe_btn.setText("管道")
         self._pipe_btn.setCheckable(True)
-        self._pipe_btn.setToolTip("依次点击两个端点建立管道")
+        self._pipe_btn.setToolTip("依次点击两个端点建立管道；插板阀使用内联法兰")
 
         group = QButtonGroup(self)
         group.setExclusive(True)
@@ -550,7 +550,11 @@ class MainWindow(QMainWindow):
         self._save_action.setEnabled(True)
 
     def _on_counts_changed(self, devices, pipes):
-        self._counts.setText(f"{devices} 元件  ·  {pipes} 管道")
+        inline = self.canvas.inline_gate_count()
+        text = f"{devices} 元件  ·  {pipes} 管道"
+        if inline:
+            text += f"  ·  {inline} 内联"
+        self._counts.setText(text)
 
     def _on_selection_changed(self, obj):
         self._delete_btn.setEnabled(obj is not None and not self._lock_action.isChecked())
@@ -654,6 +658,7 @@ class MainWindow(QMainWindow):
                 "基于 PySide2 的真空系统监控低代码平台<br><br>"
                 "· 分子泵 / 干泵 / 角阀 / 插板阀 / 腔室 / 管道<br>"
                 "· 拖拽组态、边角缩放、自动正交布线<br>"
+                "· 插板阀通过两侧内联法兰隔离腔室<br>"
                 "· 开关状态、软件连接、转速与压力遥测<br>"
                 "· 导入 / 导出 Qt Designer .ui 文件<br><br>"
                 "<span style='color:#8497ae'>当前为本地模拟遥测版本，"

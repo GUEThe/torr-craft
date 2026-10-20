@@ -168,6 +168,13 @@ def dumps_ui(document):
         _add_property(widget, "switchedOn", component.switched_on, kind="bool", dynamic=True)
         _add_property(widget, "targetSpeed", component.speed, kind="number", dynamic=True)
         _add_property(widget, "pressure", repr(float(component.pressure)), kind="double", dynamic=True)
+        if component.device_type == "gate":
+            _add_property(
+                widget, "flangeAId", component.flange_a_id or "", dynamic=True
+            )
+            _add_property(
+                widget, "flangeBId", component.flange_b_id or "", dynamic=True
+            )
 
     for pipe in document.pipes:
         x, y, w, h = _pipe_bounds(pipe, components_by_id)
@@ -344,9 +351,48 @@ def loads_ui(text, fallback_name="未命名工程"):
             switched_on=_prop_bool(node, "switchedOn", False),
             speed=max(0, min(spec.max_speed, _prop_int(node, "targetSpeed", spec.default_speed))),
             pressure=max(0.0, _prop_float(node, "pressure", 1.0e-5)),
+            flange_a_id=(
+                _prop_text(node, "flangeAId", "") if device_type == "gate" else ""
+            ),
+            flange_b_id=(
+                _prop_text(node, "flangeBId", "") if device_type == "gate" else ""
+            ),
         )
         components.append(data)
         component_by_id[object_id] = data
+
+    # Resolve inline gate flange references after all object IDs are known.
+    for component in components:
+        if component.device_type != "gate":
+            continue
+        resolved = []
+        for side, raw_id in (
+            ("A", component.flange_a_id),
+            ("B", component.flange_b_id),
+        ):
+            raw_id = raw_id or ""
+            if not raw_id:
+                resolved.append("")
+                continue
+            resolved_id = original_to_new.get(raw_id, _clean_id(raw_id, "missing"))
+            target = component_by_id.get(resolved_id)
+            if target is None:
+                warnings.append(
+                    f"插板阀 {component.label} 的 {side} 侧法兰指向不存在的元件：{raw_id}"
+                )
+                resolved.append("")
+            elif target.device_type != "chamber":
+                warnings.append(
+                    f"插板阀 {component.label} 的 {side} 侧法兰只能连接腔室"
+                )
+                resolved.append("")
+            else:
+                resolved.append(resolved_id)
+        if resolved[0] and resolved[0] == resolved[1]:
+            warnings.append(f"插板阀 {component.label} 两侧不能是同一个腔室")
+            resolved[1] = ""
+        component.flange_a_id = resolved[0]
+        component.flange_b_id = resolved[1]
 
     component_types = {component.object_id: component.device_type for component in components}
     for node in pipe_nodes:
@@ -362,6 +408,11 @@ def loads_ui(text, fallback_name="未命名工程"):
             continue
         source = component_by_id[source_id]
         target = component_by_id[target_id]
+        if source.device_type == "gate" or target.device_type == "gate":
+            warnings.append(
+                f"插板阀已改为内联法兰，跳过旧版管道：{source.label} → {target.label}"
+            )
+            continue
         if source.device_type == "chamber" and target.device_type == "chamber":
             warnings.append(f"跳过未隔离的腔室直连管道：{source.label} → {target.label}")
             continue

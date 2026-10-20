@@ -67,6 +67,8 @@ class ValveBase(BaseDevice):
         self._paint_valve_symbol(p, symbol)
 
         chip_text = self.spec.switch_on_text if self.switched_on else self.spec.switch_off_text
+        if self.spec.key == "gate" and getattr(self, "inline_mounted", False):
+            chip_text = "内联 · " + ("已开启" if self.switched_on else "已关闭")
         chip_w = max(48.0, QFontMetrics(theme.font(8, QFont.DemiBold)).horizontalAdvance(chip_text) + 20)
         chip = QRectF(r.center().x() - chip_w / 2.0, r.bottom() - 22, chip_w, 16)
         self._paint_chip(p, chip, chip_text, self.switched_on and self.online)
@@ -133,6 +135,12 @@ class AngleValveWidget(ValveBase):
 class GateValveWidget(ValveBase):
     def __init__(self, parent=None):
         super().__init__(DEVICE_SPECS["gate"], parent)
+        self.flange_a_id = ""
+        self.flange_b_id = ""
+
+    @property
+    def inline_mounted(self):
+        return bool(self.flange_a_id or self.flange_b_id)
 
     def _paint_valve_symbol(self, p, symbol):
         self._paint_flanges(p, symbol)
@@ -169,6 +177,18 @@ class GateValveWidget(ValveBase):
             p.setBrush(_c(theme.GREEN, 210))
             p.setPen(Qt.NoPen)
             p.drawEllipse(QPointF(body.right() + 5, body.top() + 3), 2.0, 2.0)
+
+        # Bolt marks show which flange faces are actually mounted inline.
+        for mounted, x in (
+            (bool(self.flange_a_id), symbol.left() + 1.0),
+            (bool(self.flange_b_id), symbol.right() - 1.0),
+        ):
+            if not mounted:
+                continue
+            p.setBrush(_c(theme.VIOLET, 220))
+            p.setPen(Qt.NoPen)
+            for offset in (-7.0, 0.0, 7.0):
+                p.drawEllipse(QPointF(x, cy + offset), 1.15, 1.15)
 
 
 class ChamberWidget(BaseDevice):

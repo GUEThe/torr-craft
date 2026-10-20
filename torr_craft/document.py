@@ -20,6 +20,9 @@ class ComponentData:
     switched_on: bool = False
     speed: int = 0
     pressure: float = 1.0e-5
+    # Gate valves are mounted inline, with one chamber flange on each side.
+    flange_a_id: str = ""
+    flange_b_id: str = ""
 
 
 @dataclass

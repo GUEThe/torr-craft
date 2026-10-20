@@ -250,6 +250,21 @@ QPushButton[role="danger"]:hover {{
     background: rgba(251, 113, 133, 0.16);
     border-color: {ROSE};
 }}
+QPushButton#AutoMountButton {{
+    background: rgba(167, 139, 250, 0.10);
+    border: 1px solid rgba(167, 139, 250, 0.32);
+    color: #ddd6fe;
+    padding: 8px 10px;
+}}
+QPushButton#AutoMountButton:hover {{
+    background: rgba(167, 139, 250, 0.18);
+    border-color: {VIOLET};
+}}
+QPushButton#AutoMountButton:disabled {{
+    background: #0d1728;
+    border-color: {BORDER_SOFT};
+    color: {DIM};
+}}
 QToolButton {{
     background: transparent;
     border: 1px solid transparent;

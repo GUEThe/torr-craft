@@ -86,14 +86,61 @@ class PlatformTests(unittest.TestCase):
         panel.close()
         canvas.close()
 
-    def test_chamber_to_chamber_requires_gate_valve(self):
+    def test_chamber_to_chamber_requires_inline_gate_valve(self):
         canvas, first, gate, second = self.make_canvas()
         self.assertIsNone(canvas.create_pipe(first, second))
-        p1 = canvas.create_pipe(first, gate)
-        p2 = canvas.create_pipe(gate, second)
-        self.assertIsNotNone(p1)
-        self.assertIsNotNone(p2)
-        self.assertEqual(len(canvas.pipes), 2)
+        self.assertIsNone(canvas.create_pipe(first, gate))
+        self.assertIsNone(canvas.create_pipe(gate, second))
+        self.assertEqual(len(canvas.pipes), 0)
+
+        self.assertTrue(
+            canvas.mount_gate(gate, first.device_id, second.device_id)
+        )
+        self.assertEqual(gate.flange_a_id, first.device_id)
+        self.assertEqual(gate.flange_b_id, second.device_id)
+        self.assertEqual(canvas.inline_gate_count(), 1)
+        self.assertEqual(len(canvas.pipes), 0)
+
+    def test_inspector_gate_inline_flange_controls(self):
+        canvas, first, gate, second = self.make_canvas()
+        panel = InspectorPanel()
+        panel.set_canvas(canvas)
+        panel.show()
+        canvas.select(gate)
+        self.app.processEvents()
+        self.assertTrue(panel._flange_section.isVisible())
+        self.assertFalse(panel._links_section.isVisible())
+        self.assertEqual(panel._flange_a_combo.count(), 3)
+        self.assertTrue(panel._auto_mount_btn.isEnabled())
+
+        panel._flange_a_combo.setCurrentIndex(
+            panel._flange_a_combo.findData(first.device_id)
+        )
+        panel._flange_b_combo.setCurrentIndex(
+            panel._flange_b_combo.findData(second.device_id)
+        )
+        self.app.processEvents()
+        self.assertEqual(gate.flange_a_id, first.device_id)
+        self.assertEqual(gate.flange_b_id, second.device_id)
+        self.assertEqual(canvas.inline_gate_count(), 1)
+        panel.close()
+        canvas.close()
+
+    def test_auto_mount_picks_chambers_on_both_sides(self):
+        canvas, first, gate, second = self.make_canvas()
+        self.assertTrue(canvas.auto_mount_gate(gate))
+        self.assertEqual(gate.flange_a_id, first.device_id)
+        self.assertEqual(gate.flange_b_id, second.device_id)
+        self.assertEqual(canvas.inline_gate_count(), 1)
+
+    def test_inline_gate_rejects_invalid_targets(self):
+        canvas, first, gate, second = self.make_canvas()
+        pump = canvas.add_device("turbo", x=360, y=300, select=False)
+        self.assertFalse(canvas.mount_gate(gate, first.device_id, pump.device_id))
+        self.assertFalse(canvas.mount_gate(gate, first.device_id, first.device_id))
+        self.assertTrue(canvas.set_gate_flange(gate, "a", first.device_id))
+        self.assertFalse(canvas.set_gate_flange(gate, "b", first.device_id))
+        self.assertEqual(gate.flange_b_id, "")
 
     def test_indirect_chamber_bypass_is_rejected(self):
         canvas, first, gate, second = self.make_canvas()
@@ -104,8 +151,9 @@ class PlatformTests(unittest.TestCase):
 
     def test_duplicate_connection_rejected(self):
         canvas, first, gate, second = self.make_canvas()
-        self.assertIsNotNone(canvas.create_pipe(first, gate))
-        self.assertIsNone(canvas.create_pipe(gate, first))
+        valve = canvas.add_device("angle", x=360, y=300, select=False)
+        self.assertIsNotNone(canvas.create_pipe(first, valve))
+        self.assertIsNone(canvas.create_pipe(valve, first))
         self.assertEqual(len(canvas.pipes), 1)
 
     def test_pump_telemetry_ramps_and_spins_down(self):
@@ -122,13 +170,13 @@ class PlatformTests(unittest.TestCase):
             pump.tick(0.05)
         self.assertLess(pump.display_speed, 1000)
 
-    def test_deleting_device_removes_attached_pipes(self):
+    def test_deleting_chamber_clears_inline_gate_flange(self):
         canvas, first, gate, second = self.make_canvas()
-        canvas.create_pipe(first, gate)
-        canvas.create_pipe(gate, second)
-        self.assertEqual(len(canvas.pipes), 2)
-        canvas._delete_device(gate)
-        self.assertEqual(len(canvas.pipes), 0)
+        canvas.mount_gate(gate, first.device_id, second.device_id)
+        self.assertEqual(canvas.inline_gate_count(), 1)
+        canvas._delete_device(first)
+        self.assertEqual(gate.flange_a_id, "")
+        self.assertEqual(canvas.inline_gate_count(), 0)
         self.assertEqual(len(canvas.devices), 2)
 
     def test_ui_round_trip_preserves_properties(self):
@@ -137,6 +185,8 @@ class PlatformTests(unittest.TestCase):
         self.assertIn("<ui version=\"4.0\">", xml)
         self.assertIn("MolecularPumpWidget", xml)
         self.assertIn("sourceId", xml)
+        self.assertIn("flangeAId", xml)
+        self.assertIn("flangeBId", xml)
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "system.ui"
@@ -158,23 +208,32 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(target.switched_on, source.switched_on)
             self.assertEqual(target.speed, source.speed)
             self.assertAlmostEqual(target.pressure, source.pressure)
+            self.assertEqual(target.flange_a_id, source.flange_a_id)
+            self.assertEqual(target.flange_b_id, source.flange_b_id)
 
         canvas = Canvas()
         canvas.apply_document(loaded)
         self.assertEqual(len(canvas.devices), 6)
-        self.assertEqual(len(canvas.pipes), 5)
+        self.assertEqual(len(canvas.pipes), 3)
+        self.assertEqual(canvas.inline_gate_count(), 1)
         self.assertIn("turbo_1", canvas.devices)
         turbo = canvas.devices["turbo_1"]
         self.assertTrue(turbo.switched_on)
         self.assertEqual(turbo.target_speed, 42000)
+        gate = canvas.devices["gate_1"]
+        self.assertEqual(gate.flange_a_id, "chamber_1")
+        self.assertEqual(gate.flange_b_id, "chamber_2")
 
     def test_bundled_example_ui_is_valid(self):
         sample = Path(__file__).resolve().parents[1] / "examples" / "demo_system.ui"
         loaded = read_ui_file(sample)
         self.assertEqual(loaded.project_name, "双腔真空系统")
         self.assertEqual(len(loaded.components), 6)
-        self.assertEqual(len(loaded.pipes), 5)
+        self.assertEqual(len(loaded.pipes), 3)
         self.assertFalse(loaded.warnings)
+        gate = next(c for c in loaded.components if c.device_type == "gate")
+        self.assertEqual(gate.flange_a_id, "chamber_1")
+        self.assertEqual(gate.flange_b_id, "chamber_2")
 
     def test_import_rejects_unrelated_ui(self):
         with self.assertRaises(UiFormatError):
@@ -201,6 +260,29 @@ class PlatformTests(unittest.TestCase):
             {p.source_id, p.target_id} == {"angle_1", "chamber_2"} for p in loaded.pipes
         ))
         self.assertTrue(any("插板阀" in warning for warning in loaded.warnings))
+
+    def test_import_rejects_non_chamber_gate_flange(self):
+        document = demo_document()
+        gate = next(c for c in document.components if c.device_type == "gate")
+        gate.flange_b_id = "turbo_1"
+        loaded = loads_ui(dumps_ui(document))
+        imported_gate = next(c for c in loaded.components if c.device_type == "gate")
+        self.assertEqual(imported_gate.flange_a_id, "chamber_1")
+        self.assertEqual(imported_gate.flange_b_id, "")
+        self.assertTrue(any("法兰" in warning for warning in loaded.warnings))
+
+    def test_import_skips_legacy_gate_pipes(self):
+        from torr_craft.document import PipeData
+
+        document = demo_document()
+        document.pipes.append(PipeData("pipe_old", "chamber_1", "gate_1"))
+        loaded = loads_ui(dumps_ui(document))
+        self.assertFalse(any(
+            "gate_1" in (p.source_id, p.target_id) for p in loaded.pipes
+        ))
+        self.assertTrue(any("内联法兰" in warning for warning in loaded.warnings))
+        gate = next(c for c in loaded.components if c.device_type == "gate")
+        self.assertEqual(gate.flange_a_id, "chamber_1")
 
 
 if __name__ == "__main__":

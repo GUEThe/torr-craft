@@ -24,6 +24,7 @@ from ..topology import unisolated_chamber_pair
 from ..widgets import COMPONENT_MIME
 from .base import BaseDevice
 from .devices import TYPE_CLASSES
+from .flange import paint_flange_link
 from .pipe import (
     PipeModel,
     distance_to_path,
@@ -94,6 +95,25 @@ class Canvas(QWidget):
 
         self._paint_grid(p)
         p.setRenderHint(QPainter.Antialiasing, True)
+
+        for gate in self.devices.values():
+            if gate.device_type != "gate":
+                continue
+            seen = set()
+            for chamber_id in (gate.flange_a_id, gate.flange_b_id):
+                if not chamber_id or chamber_id in seen:
+                    continue
+                seen.add(chamber_id)
+                chamber = self.devices.get(chamber_id)
+                if chamber is None or chamber.device_type != "chamber":
+                    continue
+                paint_flange_link(
+                    p,
+                    gate.geometry(),
+                    chamber.geometry(),
+                    active=bool(gate.online and gate.switched_on),
+                    highlighted=self._selected is gate,
+                )
 
         for pipe in self.pipes:
             points = self.pipe_points(pipe)
@@ -180,7 +200,7 @@ class Canvas(QWidget):
         p.drawText(
             QRectF(x + 30, y + 114, card_w - 60, 20),
             Qt.AlignCenter,
-            "拖入腔室、泵与阀门，再用管道建立真空回路",
+            "拖入腔室、泵与阀门，用管道与内联法兰建立真空回路",
         )
 
         chips = ("拖拽元件", "连接管道", "导入 .ui")
@@ -226,7 +246,7 @@ class Canvas(QWidget):
             return False
         if device.spec.has_speed and not device.switched_on:
             return False
-        if device.spec.key in ("angle", "gate") and not device.switched_on:
+        if device.spec.key == "angle" and not device.switched_on:
             return False
         return True
 
@@ -371,6 +391,153 @@ class Canvas(QWidget):
     def _emit_counts(self):
         self.countsChanged.emit(len(self.devices), len(self.pipes))
 
+    # ------------------------------------------------------------ inline flanges
+    def _chamber_for_gate(self, chamber_id):
+        chamber = self.devices.get(chamber_id)
+        if chamber is not None and chamber.device_type == "chamber":
+            return chamber
+        return None
+
+    def gate_mounts(self):
+        mounts = []
+        for gate in self.devices.values():
+            if gate.device_type != "gate":
+                continue
+            a = self._chamber_for_gate(getattr(gate, "flange_a_id", ""))
+            b = self._chamber_for_gate(getattr(gate, "flange_b_id", ""))
+            if a is not None and b is not None and a is not b:
+                mounts.append((gate, a, b))
+        return mounts
+
+    def inline_gate_count(self):
+        return len(self.gate_mounts())
+
+    def set_gate_flange(self, gate, side, chamber_id, mark=True, announce=True):
+        if gate is None or gate.device_type != "gate":
+            return False
+        if side not in ("a", "b"):
+            return False
+        if self.editing_locked:
+            if announce:
+                self._status("画布已锁定，解锁后可调整内联法兰")
+            return False
+
+        chamber_id = chamber_id or ""
+        chamber = None
+        if chamber_id:
+            chamber = self._chamber_for_gate(chamber_id)
+            if chamber is None:
+                if announce:
+                    self._status("内联法兰只能连接到腔室")
+                return False
+            other_id = gate.flange_b_id if side == "a" else gate.flange_a_id
+            if chamber_id == other_id:
+                if announce:
+                    self._status("同一插板阀的两侧不能连接到同一个腔室")
+                return False
+
+        setattr(gate, "flange_a_id" if side == "a" else "flange_b_id", chamber_id)
+        gate.update()
+        self.update()
+        self._emit_counts()
+        if mark:
+            self.documentChanged.emit("调整插板阀内联法兰")
+        if announce:
+            side_name = "A" if side == "a" else "B"
+            if chamber is None:
+                self._status(f"{gate.label} · 已拆除 {side_name} 侧法兰")
+            else:
+                self._status(f"{gate.label} · {side_name} 侧法兰 → {chamber.label}")
+        return True
+
+    def mount_gate(self, gate, chamber_a_id, chamber_b_id, mark=True, announce=True):
+        if gate is None or gate.device_type != "gate":
+            return False
+        if self.editing_locked and mark:
+            if announce:
+                self._status("画布已锁定，解锁后可调整内联法兰")
+            return False
+
+        chamber_a_id = chamber_a_id or ""
+        chamber_b_id = chamber_b_id or ""
+        chamber_a = self._chamber_for_gate(chamber_a_id) if chamber_a_id else None
+        chamber_b = self._chamber_for_gate(chamber_b_id) if chamber_b_id else None
+        if chamber_a_id and chamber_a is None:
+            if announce:
+                self._status("A 侧内联法兰只能连接到腔室")
+            return False
+        if chamber_b_id and chamber_b is None:
+            if announce:
+                self._status("B 侧内联法兰只能连接到腔室")
+            return False
+        if chamber_a is not None and chamber_a is chamber_b:
+            if announce:
+                self._status("同一插板阀的两侧不能连接到同一个腔室")
+            return False
+
+        gate.flange_a_id = chamber_a_id
+        gate.flange_b_id = chamber_b_id
+        gate.update()
+        self.update()
+        self._emit_counts()
+        if mark:
+            self.documentChanged.emit("安装插板阀内联法兰")
+        if announce:
+            if chamber_a is not None and chamber_b is not None:
+                self._status(
+                    f"{gate.label} · 内联法兰 {chamber_a.label} ↔ {chamber_b.label}"
+                )
+            elif chamber_a is not None:
+                self._status(f"{gate.label} · A 侧法兰 → {chamber_a.label}")
+            elif chamber_b is not None:
+                self._status(f"{gate.label} · B 侧法兰 → {chamber_b.label}")
+            else:
+                self._status(f"{gate.label} · 已清除内联法兰")
+        return True
+
+    def auto_mount_gate(self, gate):
+        if gate is None or gate.device_type != "gate":
+            return False
+        if self.editing_locked:
+            self._status("画布已锁定，解锁后可调整内联法兰")
+            return False
+        chambers = [
+            device for device in self.devices.values() if device.device_type == "chamber"
+        ]
+        if len(chambers) < 2:
+            self._status("自动贴装需要至少两个腔室")
+            return False
+
+        gate_center = gate.geometry().center()
+
+        def distance(chamber):
+            center = chamber.geometry().center()
+            return (center.x() - gate_center.x()) ** 2 + (center.y() - gate_center.y()) ** 2
+
+        left = [
+            chamber
+            for chamber in chambers
+            if chamber.geometry().center().x() < gate_center.x()
+        ]
+        right = [
+            chamber
+            for chamber in chambers
+            if chamber.geometry().center().x() > gate_center.x()
+        ]
+        if left and right:
+            chamber_a = min(left, key=distance)
+            chamber_b = min(right, key=distance)
+        else:
+            ordered = sorted(chambers, key=distance)
+            chamber_a, chamber_b = ordered[0], ordered[1]
+
+        if not self.mount_gate(
+            gate, chamber_a.device_id, chamber_b.device_id, mark=True, announce=False
+        ):
+            return False
+        self._status(f"{gate.label} · 自动贴装 {chamber_a.label} ↔ {chamber_b.label}")
+        return True
+
     # -------------------------------------------------------------- connection
     def set_connect_mode(self, enabled):
         enabled = bool(enabled) and not self.editing_locked
@@ -381,7 +548,9 @@ class Canvas(QWidget):
         self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
         if enabled:
             self.clear_selection()
-            self._status("管道模式 · 依次点击两个端点；腔室之间必须经插板阀隔离")
+            self._status(
+                "管道模式 · 依次点击两个端点；插板阀使用内联法兰，不接入管道"
+            )
         else:
             self._status("已退出管道模式")
         for device in self.devices.values():
@@ -391,6 +560,9 @@ class Canvas(QWidget):
 
     def handle_device_clicked(self, device):
         if not self.connect_mode:
+            return
+        if device.device_type == "gate":
+            self._status("插板阀使用内联法兰，请在属性检查器中绑定两侧腔室")
             return
         if self._connect_source is None:
             self._connect_source = device
@@ -421,6 +593,8 @@ class Canvas(QWidget):
             return False, "连接端点不存在"
         if source is target or source.device_id == target.device_id:
             return False, "不能把元件连接到自身"
+        if source.device_type == "gate" or target.device_type == "gate":
+            return False, "插板阀使用两侧内联法兰安装，不能作为管道端点"
         if source.device_type == "chamber" and target.device_type == "chamber":
             return False, "两个腔室之间必须经插板阀隔离，不能直接用管道连接"
         for pipe in self.pipes:
@@ -445,6 +619,10 @@ class Canvas(QWidget):
         return True, ""
 
     def create_pipe(self, source, target, pipe_id=None, bypass_validation=False, mark=True):
+        if source.device_type == "gate" or target.device_type == "gate":
+            if not bypass_validation:
+                self._status("连接被拒绝 · 插板阀使用内联法兰，不能作为管道端点")
+            return None
         if not bypass_validation:
             ok, message = self.validate_connection(source, target)
             if not ok:
@@ -522,6 +700,16 @@ class Canvas(QWidget):
         for pipe in list(self.pipes):
             if device.device_id in (pipe.source_id, pipe.target_id):
                 self.pipes.remove(pipe)
+        if device.device_type == "chamber":
+            for gate in self.devices.values():
+                if gate.device_type != "gate":
+                    continue
+                if gate.flange_a_id == device.device_id:
+                    gate.flange_a_id = ""
+                    gate.update()
+                if gate.flange_b_id == device.device_id:
+                    gate.flange_b_id = ""
+                    gate.update()
         self.devices.pop(device.device_id, None)
         if self._connect_source is device:
             self._connect_source = None
@@ -608,6 +796,8 @@ class Canvas(QWidget):
                     switched_on=bool(device.switched_on),
                     speed=int(device.target_speed),
                     pressure=float(device.pressure),
+                    flange_a_id=getattr(device, "flange_a_id", ""),
+                    flange_b_id=getattr(device, "flange_b_id", ""),
                 )
             )
         pipes = [
@@ -645,6 +835,16 @@ class Canvas(QWidget):
             if hasattr(widget, "seed_open_phase"):
                 widget.seed_open_phase()
             widget.update()
+
+        for component in document.components:
+            if component.device_type != "gate":
+                continue
+            gate = self.devices.get(id_map.get(component.object_id, component.object_id))
+            if gate is None:
+                continue
+            flange_a = id_map.get(component.flange_a_id, component.flange_a_id)
+            flange_b = id_map.get(component.flange_b_id, component.flange_b_id)
+            self.mount_gate(gate, flange_a, flange_b, mark=False, announce=False)
 
         for pipe in document.pipes:
             source = self.devices.get(id_map.get(pipe.source_id, pipe.source_id))
@@ -792,6 +992,19 @@ class Canvas(QWidget):
             )
             menu.addAction(online_action)
         if device.spec.has_switch or device.spec.has_online:
+            menu.addSeparator()
+        if device.device_type == "gate":
+            auto_mount = QAction("自动贴装相邻腔室", menu)
+            auto_mount.triggered.connect(
+                lambda checked=False, d=device: self.auto_mount_gate(d)
+            )
+            menu.addAction(auto_mount)
+            if device.flange_a_id or device.flange_b_id:
+                clear_mount = QAction("清除内联法兰", menu)
+                clear_mount.triggered.connect(
+                    lambda checked=False, d=device: self.mount_gate(d, "", "", announce=True)
+                )
+                menu.addAction(clear_mount)
             menu.addSeparator()
         duplicate = QAction("复制元件", menu)
         duplicate.triggered.connect(lambda checked=False: self.duplicate_selected())

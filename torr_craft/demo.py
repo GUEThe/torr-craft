@@ -29,6 +29,8 @@ def demo_document():
             online=True,
             switched_on=True,
             pressure=1.0e-5,
+            flange_a_id="chamber_1",
+            flange_b_id="chamber_2",
         ),
         ComponentData(
             device_type="chamber",
@@ -83,11 +85,9 @@ def demo_document():
         ),
     ]
     pipes = [
-        PipeData("pipe_1", "chamber_1", "gate_1"),
-        PipeData("pipe_2", "gate_1", "chamber_2"),
-        PipeData("pipe_3", "chamber_1", "angle_1"),
-        PipeData("pipe_4", "angle_1", "turbo_1"),
-        PipeData("pipe_5", "turbo_1", "dry_1"),
+        PipeData("pipe_1", "chamber_1", "angle_1"),
+        PipeData("pipe_2", "angle_1", "turbo_1"),
+        PipeData("pipe_3", "turbo_1", "dry_1"),
     ]
     return DocumentData(project_name="双腔真空系统", components=components, pipes=pipes)
 

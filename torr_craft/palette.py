@@ -64,7 +64,7 @@ class ComponentPalette(QFrame):
         self.pipe_button.setIcon(icons.make_icon("pipe", theme.CYAN, 34))
         self.pipe_button.setIconSize(QSize(36, 36))
         self.pipe_button.setText("管道")
-        self.pipe_button.setToolTip("管道连接 · 依次点击两个端点")
+        self.pipe_button.setToolTip("管道连接 · 依次点击两个端点；插板阀使用内联法兰")
         self.pipe_button.setCheckable(True)
         self.pipe_button.setCursor(Qt.PointingHandCursor)
         self.pipe_button.setFixedHeight(84)
@@ -100,7 +100,7 @@ class ComponentPalette(QFrame):
         grid.setColumnStretch(1, 1)
         layout.addLayout(grid)
 
-        pipe_hint = QLabel("管道：依次点击两个端点；腔室之间必须经插板阀隔离。")
+        pipe_hint = QLabel("管道连接泵、角阀与腔室；插板阀采用两侧内联法兰。")
         pipe_hint.setObjectName("Tiny")
         pipe_hint.setWordWrap(True)
         layout.addWidget(pipe_hint)
@@ -122,9 +122,9 @@ class ComponentPalette(QFrame):
         rule_title_row.addStretch(1)
         rule_layout.addLayout(rule_title_row)
         for line in (
-            "泵、阀、腔室均可接入管道",
+            "管道连接泵、角阀与腔室",
+            "插板阀经两侧法兰隔离腔室",
             "腔室直连被禁止",
-            "双腔之间需经插板阀",
         ):
             label = QLabel("·  " + line)
             label.setObjectName("Tiny")

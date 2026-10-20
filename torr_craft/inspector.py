@@ -2,6 +2,7 @@
 
 from PySide2.QtCore import Qt
 from PySide2.QtWidgets import (
+    QComboBox,
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
@@ -68,7 +69,7 @@ class InspectorPanel(QFrame):
         footer_layout.setSpacing(7)
         dot = QLabel("●")
         dot.setStyleSheet(f"color: {theme.VIOLET}; font-size: 8px;")
-        hint = QLabel("腔室之间必须经插板阀隔离")
+        hint = QLabel("插板阀通过两侧内联法兰隔离腔室")
         hint.setObjectName("Tiny")
         footer_layout.addWidget(dot)
         footer_layout.addWidget(hint, 1)
@@ -120,7 +121,7 @@ class InspectorPanel(QFrame):
             "拖拽左侧元件到画布，或单击快速添加",
             "选中元件后拖动边角控制点调整尺寸",
             "双击泵或阀门可切换运行 / 开关状态",
-            "管道模式下依次点击两个端点建立连接",
+            "插板阀在检查器中绑定两侧腔室法兰",
         ):
             label = QLabel("·  " + line)
             label.setObjectName("Hint")
@@ -195,6 +196,48 @@ class InspectorPanel(QFrame):
         card_layout.addWidget(self._power_row)
         state_layout.addWidget(state_card)
         layout.addWidget(self._state_section)
+
+        self._flange_section, flange_layout = self._section("内联法兰", "INLINE MOUNT")
+        flange_card = QFrame()
+        flange_card.setObjectName("InsetCard")
+        flange_card_layout = QVBoxLayout(flange_card)
+        flange_card_layout.setContentsMargins(12, 10, 12, 10)
+        flange_card_layout.setSpacing(7)
+
+        flange_help = QLabel("插板阀直接夹装在两个腔室之间，无需管道。")
+        flange_help.setObjectName("Hint")
+        flange_help.setWordWrap(True)
+        flange_card_layout.addWidget(flange_help)
+
+        self._flange_a_combo = self._flange_combo()
+        self._flange_b_combo = self._flange_combo()
+        for side, combo in (("A", self._flange_a_combo), ("B", self._flange_b_combo)):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            side_label = QLabel(f"{side} 侧")
+            side_label.setObjectName("FieldLabel")
+            side_label.setFixedWidth(30)
+            row.addWidget(side_label)
+            row.addWidget(combo, 1)
+            flange_card_layout.addLayout(row)
+        self._flange_a_combo.currentIndexChanged.connect(
+            lambda index: self._apply_flange("a")
+        )
+        self._flange_b_combo.currentIndexChanged.connect(
+            lambda index: self._apply_flange("b")
+        )
+
+        self._flange_hint = QLabel("为两侧法兰选择腔室")
+        self._flange_hint.setObjectName("Tiny")
+        self._flange_hint.setWordWrap(True)
+        flange_card_layout.addWidget(self._flange_hint)
+
+        self._auto_mount_btn = QPushButton("自动贴装相邻腔室")
+        self._auto_mount_btn.setObjectName("AutoMountButton")
+        self._auto_mount_btn.clicked.connect(self._auto_mount_gate)
+        flange_card_layout.addWidget(self._auto_mount_btn)
+        flange_layout.addWidget(flange_card)
+        layout.addWidget(self._flange_section)
 
         self._speed_section, speed_layout = self._section("转速", "ROTATION")
         speed_card = QFrame()
@@ -272,7 +315,7 @@ class InspectorPanel(QFrame):
         geometry_layout.addLayout(grid)
         layout.addWidget(geometry_section)
 
-        links_section, links_layout = self._section("连接", "NETWORK")
+        self._links_section, links_layout = self._section("连接", "NETWORK")
         links_card = QFrame()
         links_card.setObjectName("InsetCard")
         links_card_layout = QVBoxLayout(links_card)
@@ -286,7 +329,7 @@ class InspectorPanel(QFrame):
         links_card_layout.addWidget(self._links_count)
         links_card_layout.addWidget(self._links_value)
         links_layout.addWidget(links_card)
-        layout.addWidget(links_section)
+        layout.addWidget(self._links_section)
 
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
@@ -420,6 +463,12 @@ class InspectorPanel(QFrame):
             "阀门状态" if spec.key in ("angle", "gate") else "运行状态"
         )
 
+        is_gate = spec.key == "gate"
+        self._flange_section.setVisible(is_gate)
+        self._links_section.setVisible(not is_gate)
+        if is_gate:
+            self._populate_flange_combos(device)
+
         self._speed_section.setVisible(spec.has_speed)
         self._speed_spin.setRange(0, spec.max_speed)
         self._speed_spin.setValue(int(device.target_speed))
@@ -433,7 +482,8 @@ class InspectorPanel(QFrame):
         self._w_spin.setRange(spec.min_size[0], self.canvas.width() if self.canvas else 1440)
         self._h_spin.setRange(spec.min_size[1], self.canvas.height() if self.canvas else 900)
         self._write_geometry(device)
-        self._update_links(device)
+        if not is_gate:
+            self._update_links(device)
         self.refresh_runtime()
 
     def _update_links(self, device):
@@ -460,8 +510,72 @@ class InspectorPanel(QFrame):
             self._links_value.setText("尚未连接管道")
 
     def _on_counts_changed(self, devices, pipes):
-        if isinstance(self._selected, BaseDevice):
+        if not isinstance(self._selected, BaseDevice):
+            return
+        if self._selected.device_type == "gate":
+            self._populate_flange_combos(self._selected)
+        else:
             self._update_links(self._selected)
+
+    def _flange_combo(self):
+        combo = QComboBox()
+        combo.setMinimumHeight(32)
+        return combo
+
+    def _populate_flange_combos(self, gate):
+        if self.canvas is None:
+            return
+        was_loading = self._loading
+        self._loading = True
+        try:
+            chambers = [
+                device
+                for device in self.canvas.devices.values()
+                if device.device_type == "chamber"
+            ]
+            gate_center = gate.geometry().center()
+
+            def distance(chamber):
+                center = chamber.geometry().center()
+                return (center.x() - gate_center.x()) ** 2 + (
+                    center.y() - gate_center.y()
+                ) ** 2
+
+            chambers.sort(key=distance)
+            for combo, selected_id in (
+                (self._flange_a_combo, gate.flange_a_id),
+                (self._flange_b_combo, gate.flange_b_id),
+            ):
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItem("未连接", "")
+                for chamber in chambers:
+                    combo.addItem(chamber.label, chamber.device_id)
+                index = combo.findData(selected_id)
+                combo.setCurrentIndex(index if index >= 0 else 0)
+                combo.blockSignals(False)
+
+            chamber_a = self.canvas.devices.get(gate.flange_a_id)
+            chamber_b = self.canvas.devices.get(gate.flange_b_id)
+            if chamber_a is not None and chamber_b is not None:
+                text = f"已隔离：{chamber_a.label} ↔ {chamber_b.label}"
+                color = theme.GREEN
+            elif chamber_a is not None or chamber_b is not None:
+                text = "已安装一侧，选择另一侧腔室完成隔离"
+                color = theme.AMBER
+            elif len(chambers) < 2:
+                text = "至少需要两个腔室才能形成内联隔离"
+                color = theme.MUTED
+            else:
+                text = "为两侧法兰选择不同腔室，无需管道"
+                color = theme.MUTED
+            self._flange_hint.setText(text)
+            self._flange_hint.setStyleSheet(f"color: {color}; font-size: 10px;")
+            self._auto_mount_btn.setEnabled(
+                len(chambers) >= 2 and not self.canvas.editing_locked
+            )
+        finally:
+            self._loading = was_loading
 
     def _populate_pipe(self, pipe):
         self._pipe_id.setText(pipe.pipe_id)
@@ -562,6 +676,32 @@ class InspectorPanel(QFrame):
         self._selected.set_pressure(value)
         self.canvas.mark_changed("修改腔室压力")
         self.canvas.update()
+
+    def _apply_flange(self, side):
+        if (
+            self._loading
+            or self.canvas is None
+            or not isinstance(self._selected, BaseDevice)
+            or self._selected.device_type != "gate"
+        ):
+            return
+        combo = self._flange_a_combo if side == "a" else self._flange_b_combo
+        chamber_id = combo.currentData() or ""
+        if not self.canvas.set_gate_flange(self._selected, side, chamber_id):
+            self._populate_flange_combos(self._selected)
+            return
+        self._populate_flange_combos(self._selected)
+
+    def _auto_mount_gate(self, checked=False):
+        if (
+            self._loading
+            or self.canvas is None
+            or not isinstance(self._selected, BaseDevice)
+            or self._selected.device_type != "gate"
+        ):
+            return
+        if self.canvas.auto_mount_gate(self._selected):
+            self._populate_flange_combos(self._selected)
 
     def _apply_geometry(self, value=None):
         if self._loading or not isinstance(self._selected, BaseDevice) or self.canvas is None:

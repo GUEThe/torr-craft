@@ -27,11 +27,11 @@ def main():
         window.canvas.tick(0.05)
         app.processEvents()
 
-    turbo = window.canvas.devices.get("turbo_1")
-    if turbo is not None:
-        window.canvas.select(turbo)
+    gate = window.canvas.devices.get("gate_1")
+    if gate is not None:
+        window.canvas.select(gate)
         window.inspector.refresh_runtime()
-        window.inspector.show_selection(turbo)
+        window.inspector.show_selection(gate)
     app.processEvents()
 
     output_dir = ROOT / "artifacts"
