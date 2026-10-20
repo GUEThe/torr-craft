@@ -28,6 +28,7 @@
 - 本地模拟遥测、运行状态联动（泵/阀关闭时管道流动动画停止）
 - 新建、示例工程、另存为、打开、未保存确认
 - 画布锁定模式，便于演示时防止误移动
+- 为 **本机 pyside2-designer** 提供原生 Qt Designer 插件，Widget Box 中可见六类元件
 
 ## 快速开始
 
@@ -106,6 +107,32 @@ python -m torr_craft
 ```
 
 连接校验基于整张拓扑图：移除所有插板阀后，每个连通分量中最多只能有一个腔室。这样即使通过角阀、泵等中间元件“绕路”，两个腔室也无法在无插板阀的情况下连通。插板阀的两侧法兰引用会随 `.ui` 文件一起保存；删除腔室时，指向它的法兰引用会自动清空。
+
+## Qt Designer 可视化插件（pyside2-designer）
+
+`pyside2-designer` 是 Qt 5.15 Widgets Designer，它**不支持像 PySide6 那样直接加载 Python 插件**，只接受 Qt C++ 插件 DLL。因此仓库提供了原生插件工程：[designer_plugin](designer_plugin/README.md)。
+
+插件会在 Designer 左侧 Widget Box 增加 **“Torr Craft 真空元件”** 分组，包含腔室、分子泵、干泵、角阀、插板阀和管道预览；属性面板可编辑标签、在线状态、运行状态、目标转速、压力、法兰与管道路由等属性。Designer 保存的 `.ui` 可直接导入 Torr Craft。
+
+### 安装
+
+GitHub Actions 会使用 Qt 5.15.2 + MSVC2019 x64 编译插件并发布到 [Releases](https://github.com/GUEThe/torr-craft/releases)。下载 `torr_craft_designer.dll` 后：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\designer_plugin\install_designer_plugin.ps1 `
+  -DllPath .\torr_craft_designer.dll -Launch
+```
+
+或自动下载最新 Release：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\designer_plugin\install_designer_plugin.ps1 `
+  -DownloadLatest -Launch
+```
+
+插件会安装到当前 PySide2 的 `plugins\designer` 目录并启动 `pyside2-designer`。
+
+> Designer 中的控件是静态预览，不执行 Torr Craft 的完整遥测和自动布线逻辑；运行时仍使用平台自己的 PySide2 控件。当前机器若没有 Qt 5.15.2 开发包，可直接使用 CI 产物。
 
 ## `.ui` 文件说明
 
@@ -202,6 +229,8 @@ torr_craft/
 examples/demo_system.ui    # 可直接导入的示例工程
 tests/test_platform.py     # 无头回归测试
 tools/screenshot.py        # 生成 README 预览图
+designer_plugin/           # pyside2-designer 原生 C++ 插件工程
+.github/workflows/         # Qt 5.15.2 插件构建与发布
 ```
 
 ## 测试

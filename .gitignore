@@ -9,3 +9,7 @@ Thumbs.db
 artifacts/*.log
 artifacts/*.tmp
 artifacts/temp-*
+designer_plugin/build/
+designer_plugin/tests/build/
+designer_plugin/*.pro.user
+designer_plugin/**/*.pro.user

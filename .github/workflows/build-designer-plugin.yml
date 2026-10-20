@@ -1,0 +1,129 @@
+name: Build Qt Designer Plugin
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'designer_plugin/**'
+      - '.github/workflows/build-designer-plugin.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install Qt 5.15.2 (MSVC2019 x64)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.15.2'
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          modules: 'qttools'
+          cache: true
+
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build Designer plugin
+        shell: cmd
+        run: |
+          cd designer_plugin
+          qmake torr_craft_designer.pro CONFIG+=release > build.log 2>&1
+          if errorlevel 1 (type build.log & exit /b 1)
+          nmake >> build.log 2>&1
+          type build.log
+          if errorlevel 1 exit /b 1
+
+      - name: Build plugin probe
+        shell: cmd
+        run: |
+          cd designer_plugin\tests
+          qmake probe.pro CONFIG+=release > build.log 2>&1
+          if errorlevel 1 (type build.log & exit /b 1)
+          nmake >> build.log 2>&1
+          type build.log
+          if errorlevel 1 exit /b 1
+
+      - name: Render component previews
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $previewDir = Join-Path $env:GITHUB_WORKSPACE 'designer_plugin\build\previews'
+          New-Item -ItemType Directory -Force -Path $previewDir | Out-Null
+          $probe = Join-Path $env:GITHUB_WORKSPACE 'designer_plugin\tests\build\probe.exe'
+          $plugin = Join-Path $env:GITHUB_WORKSPACE 'designer_plugin\build\designer\torr_craft_designer.dll'
+          & $probe $plugin $previewDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install PySide2 and test real pyside2-designer
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check PySide2==5.15.2.1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $pyside = python -c "import PySide2, pathlib; print(pathlib.Path(PySide2.__file__).parent)"
+          $pluginSrc = Join-Path $env:GITHUB_WORKSPACE 'designer_plugin\build\designer\torr_craft_designer.dll'
+          $pluginDir = Join-Path $pyside 'plugins\designer'
+          New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
+          Copy-Item -LiteralPath $pluginSrc -Destination (Join-Path $pluginDir 'torr_craft_designer.dll') -Force
+
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:QT_DEBUG_PLUGINS = '1'
+          $errPath = Join-Path $env:GITHUB_WORKSPACE 'designer_plugin\build\designer-load.log'
+          $designer = Join-Path $pyside 'designer.exe'
+          $process = Start-Process -FilePath $designer -RedirectStandardError $errPath -PassThru
+          Start-Sleep -Seconds 8
+          if (-not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force
+          }
+          Get-Content -LiteralPath $errPath -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+          $loaded = Select-String -Path $errPath -Pattern 'loaded library.*torr_craft_designer' -Quiet
+          if (-not $loaded) {
+            Write-Error 'pyside2-designer did not report loading torr_craft_designer.dll'
+            exit 1
+          }
+
+      - name: Upload plugin and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: torr-craft-designer-plugin
+          if-no-files-found: warn
+          path: |
+            designer_plugin/build/designer/torr_craft_designer.dll
+            designer_plugin/build/previews/*.png
+            designer_plugin/build/designer-load.log
+            designer_plugin/build.log
+            designer_plugin/tests/build.log
+
+      - name: Publish latest build as GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: designer-plugin-build-${{ github.run_number }}
+          name: Torr Craft Designer Plugin build ${{ github.run_number }}
+          make_latest: true
+          body: |
+            Qt 5.15.2 (MSVC2019 x64) Designer plugin for the local `pyside2-designer`.
+
+            Download `torr_craft_designer.dll` and install it with:
+            `designer_plugin/install_designer_plugin.ps1 -DllPath .\torr_craft_designer.dll -Launch`
+          files: |
+            designer_plugin/build/designer/torr_craft_designer.dll
+            designer_plugin/build/previews/*.png
+            designer_plugin/build/designer-load.log
