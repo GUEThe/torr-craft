@@ -84,6 +84,7 @@ jobs:
 
           $env:QT_QPA_PLATFORM = 'offscreen'
           $env:QT_DEBUG_PLUGINS = '1'
+          $env:QT_PLUGIN_PATH = Join-Path $pyside 'plugins'
           $errPath = Join-Path $env:GITHUB_WORKSPACE 'designer_plugin\build\designer-load.log'
           $designer = Join-Path $pyside 'designer.exe'
           $process = Start-Process -FilePath $designer -RedirectStandardError $errPath -PassThru

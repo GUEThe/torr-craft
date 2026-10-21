@@ -62,6 +62,7 @@ Write-Host "  $target"
 
 if ($Launch) {
     $designer = Join-Path $pysideDir 'designer.exe'
+    $env:QT_PLUGIN_PATH = Join-Path $pysideDir 'plugins'
     if ($DebugPlugin) {
         $env:QT_DEBUG_PLUGINS = '1'
     }

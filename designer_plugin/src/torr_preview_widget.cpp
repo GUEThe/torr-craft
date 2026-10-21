@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 
 namespace {
 
@@ -54,6 +55,14 @@ QFont monoFont(int pixels, int weight = QFont::Bold)
     font.setPixelSize(std::max(7, pixels));
     font.setWeight(weight);
     return font;
+}
+
+QPolygonF polygonOf(std::initializer_list<QPointF> points)
+{
+    QPolygonF polygon;
+    for (const QPointF &point : points)
+        polygon << point;
+    return polygon;
 }
 
 } // namespace
@@ -467,12 +476,12 @@ void TorrPreviewWidget::paintValve(QPainter &p, const QRectF &r, bool gate)
         p.setBrush(accentColor);
         p.drawRoundedRect(QRectF(center.x() - 4, center.y() - 14, 8, 28), 2, 2);
     } else {
-        p.drawPolygon(QPolygonF({
+        p.drawPolygon(polygonOf({
             QPointF(center.x() - 18, center.y() - 14),
             QPointF(center.x(), center.y()),
             QPointF(center.x() - 18, center.y() + 14),
             QPointF(center.x() - 18, center.y() - 14)}));
-        p.drawPolygon(QPolygonF({
+        p.drawPolygon(polygonOf({
             QPointF(center.x() + 18, center.y() - 14),
             QPointF(center.x(), center.y()),
             QPointF(center.x() + 18, center.y() + 14),
@@ -564,8 +573,8 @@ void TorrPreviewWidget::paintGlyph(QPainter &p, const QRectF &rect) const
         p.drawLine(QPointF(19, 40), QPointF(29, 40));
     } else if (m_kind == Angle) {
         p.drawLine(QPointF(5, 30), QPointF(45, 30));
-        p.drawPolygon(QPolygonF({QPointF(14, 23), QPointF(24, 30), QPointF(14, 37)}));
-        p.drawPolygon(QPolygonF({QPointF(34, 23), QPointF(24, 30), QPointF(34, 37)}));
+        p.drawPolygon(polygonOf({QPointF(14, 23), QPointF(24, 30), QPointF(14, 37)}));
+        p.drawPolygon(polygonOf({QPointF(34, 23), QPointF(24, 30), QPointF(34, 37)}));
         p.drawLine(QPointF(24, 30), QPointF(24, 16));
     } else {
         QPainterPath path;
