@@ -112,7 +112,7 @@ jobs:
             designer_plugin/tests/build.log
 
       - name: Publish latest build as GitHub Release
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && success()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: designer-plugin-build-${{ github.run_number }}
@@ -127,3 +127,22 @@ jobs:
             designer_plugin/build/designer/torr_craft_designer.dll
             designer_plugin/build/previews/*.png
             designer_plugin/build/designer-load.log
+
+      - name: Publish build diagnostics to artifact branch
+        if: always()
+        shell: bash
+        run: |
+          set -e
+          mkdir -p designer_plugin/prebuilt
+          cp designer_plugin/build/designer/torr_craft_designer.dll designer_plugin/prebuilt/ 2>/dev/null || true
+          cp designer_plugin/build/previews/*.png designer_plugin/prebuilt/ 2>/dev/null || true
+          cp designer_plugin/build/designer-load.log designer_plugin/prebuilt/ 2>/dev/null || true
+          cp designer_plugin/build.log designer_plugin/prebuilt/plugin-build.log 2>/dev/null || true
+          cp designer_plugin/tests/build.log designer_plugin/prebuilt/probe-build.log 2>/dev/null || true
+          printf 'run=%s sha=%s status=%s\n' "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$GITHUB_ACTION" > designer_plugin/prebuilt/run.txt
+          git config user.name 'Torr Craft CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git checkout -B designer-plugin-artifacts
+          git add -f designer_plugin/prebuilt
+          git commit -m "build: designer plugin artifacts [skip ci]" || true
+          git push origin HEAD:designer-plugin-artifacts --force
